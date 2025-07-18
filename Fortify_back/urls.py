@@ -24,6 +24,8 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/accounts/', include('accounts.urls')),  # URLهای مربوط به حساب‌ها
     path('api/chats/', include('chats.urls')),  # URLهای مربوط به چت‌ها (برای درخواست‌های API)
+    path('api/contacts/', include('contacts.urls')),
+    path('api/notifications/', include('notifications.urls')),
 
     # مستندات Swagger
     path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),

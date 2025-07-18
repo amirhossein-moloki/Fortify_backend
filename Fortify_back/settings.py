@@ -4,6 +4,7 @@ from datetime import timedelta
 import os
 from urllib.parse import urlparse
 import dj_database_url
+import sys
 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -35,6 +36,8 @@ INSTALLED_APPS = [
     'drf_yasg',
     'silk',
     'chats',
+    'contacts',
+    'notifications',
 ]
 
 MIDDLEWARE = [
@@ -147,18 +150,24 @@ CORS_ALLOW_HEADERS = [
 ]
 
 # Channels settings
-redis_url = config('REDIS_URL')
-parsed_redis_url = urlparse(redis_url)
-
-CHANNEL_LAYERS = {
-    'default': {
-        'BACKEND': 'channels_redis.core.RedisChannelLayer',
-        'CONFIG': {
-            "hosts": [(parsed_redis_url.hostname, parsed_redis_url.port)],
-            "password": parsed_redis_url.password,
+if 'test' in sys.argv:
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels.layers.InMemoryChannelLayer',
         },
-    },
-}
+    }
+else:
+    redis_url = config('REDIS_URL')
+    parsed_redis_url = urlparse(redis_url)
+
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {
+                "hosts": [config('REDIS_URL')],
+            },
+        },
+    }
 
 # Email settings
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
