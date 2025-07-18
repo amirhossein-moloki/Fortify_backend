@@ -10,11 +10,11 @@ import dj_database_url
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Quick-start development settings - unsuitable for production
-SECRET_KEY = config('DJANGO_SECRET_KEY', default='your-secret-key')
+SECRET_KEY = config('DJANGO_SECRET_KEY')
 
 DEBUG = config('DEBUG', default=False, cast=bool)
 
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='.onrender.com').split(',')
+ALLOWED_HOSTS = config('ALLOWED_HOSTS').split(',')
 
 # Ensure DJANGO_SETTINGS_MODULE is set correctly
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'Fortify_back.settings')
@@ -71,7 +71,7 @@ ASGI_APPLICATION = "Fortify_back.asgi.application"
 
 # Database
 DATABASES = {
-    'default': dj_database_url.config(default=config('DATABASE_URL'))
+    'default': dj_database_url.parse(config('DATABASE_URL'))
 }
 
 # Password validation
@@ -147,7 +147,7 @@ CORS_ALLOW_HEADERS = [
 ]
 
 # Channels settings
-redis_url = config('REDIS_URL', default='redis://127.0.0.1:6379')
+redis_url = config('REDIS_URL')
 parsed_redis_url = urlparse(redis_url)
 
 CHANNEL_LAYERS = {
@@ -162,12 +162,12 @@ CHANNEL_LAYERS = {
 
 # Email settings
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
-EMAIL_PORT = config('EMAIL_PORT', default=465, cast=int)
-EMAIL_USE_SSL = config('EMAIL_USE_SSL', default=True, cast=bool)
-EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=False, cast=bool)
-EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='amir.moloki8558@gmail.com')
-EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='drgzueqzrcupbfyr')
+EMAIL_HOST = config('EMAIL_HOST')
+EMAIL_PORT = config('EMAIL_PORT', cast=int)
+EMAIL_USE_SSL = config('EMAIL_USE_SSL', cast=bool)
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', cast=bool)
+EMAIL_HOST_USER = config('EMAIL_HOST_USER')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD')
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 
 # Logging settings
