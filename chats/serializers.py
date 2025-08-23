@@ -11,12 +11,22 @@ class ReactionSerializer(serializers.ModelSerializer):
         model = Reaction
         fields = ('id', 'user', 'emoji', 'created_at')
 
+class PinnedMessageSerializer(serializers.ModelSerializer):
+    sender = UserSerializer(read_only=True)
+    reactions = ReactionSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Message
+        fields = ('id', 'sender', 'content', 'timestamp', 'is_edited', 'is_deleted', 'reactions')
+
+
 # سریالایزر برای مدل Chat
 class ChatSerializer(serializers.ModelSerializer):
     participants = UserSerializer(many=True)  # نمایش شرکت‌کنندگان
     group_admin = UserSerializer(many=True)  # تغییر به چند ادمین
     created_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
     updated_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
+    pinned_message = PinnedMessageSerializer(read_only=True)
 
     group_name = serializers.SerializerMethodField()
     group_image = serializers.SerializerMethodField()
@@ -34,6 +44,7 @@ class ChatSerializer(serializers.ModelSerializer):
             'group_image',
             'max_participants',
             'description',
+            'pinned_message',
         )
 
     def get_group_name(self, obj):

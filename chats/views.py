@@ -449,3 +449,66 @@ class ReactToMessageView(APIView):
             return Response(status=status.HTTP_204_NO_CONTENT)
         except Reaction.DoesNotExist:
             return Response({"error": "Reaction not found."}, status=status.HTTP_404_NOT_FOUND)
+
+
+class PinMessageView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, chat_id, message_id):
+        try:
+            chat = Chat.objects.get(id=chat_id)
+            message = Message.objects.get(id=message_id)
+        except Chat.DoesNotExist:
+            return Response({"error": "Chat not found."}, status=status.HTTP_404_NOT_FOUND)
+        except Message.DoesNotExist:
+            return Response({"error": "Message not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if request.user not in chat.group_admin.all():
+            return Response({"error": "You do not have permission to pin messages in this chat."}, status=status.HTTP_403_FORBIDDEN)
+
+        if message.chat != chat:
+            return Response({"error": "Message is not in this chat."}, status=status.HTTP_400_BAD_REQUEST)
+
+        chat.pinned_message = message
+        chat.save()
+
+        serializer = ChatSerializer(chat, context={'request': request})
+
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f"chat_{chat_id}",
+            {
+                "type": "pin_message_update",
+                "chat": serializer.data,
+            },
+        )
+
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def delete(self, request, chat_id, message_id):
+        try:
+            chat = Chat.objects.get(id=chat_id)
+        except Chat.DoesNotExist:
+            return Response({"error": "Chat not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if request.user not in chat.group_admin.all():
+            return Response({"error": "You do not have permission to unpin messages in this chat."}, status=status.HTTP_403_FORBIDDEN)
+
+        if chat.pinned_message is None or chat.pinned_message.id != message_id:
+            return Response({"error": "This message is not pinned."}, status=status.HTTP_400_BAD_REQUEST)
+
+        chat.pinned_message = None
+        chat.save()
+
+        serializer = ChatSerializer(chat, context={'request': request})
+
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f"chat_{chat_id}",
+            {
+                "type": "pin_message_update",
+                "chat": serializer.data,
+            },
+        )
+
+        return Response(status=status.HTTP_204_NO_CONTENT)

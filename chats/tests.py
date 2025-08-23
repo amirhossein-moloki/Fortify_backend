@@ -198,3 +198,37 @@ class ChatFeaturesTestCase(TestCase):
         self.assertEqual(decrypted_content, file_content)
 
         await communicator1.disconnect()
+
+class PinMessageTestCase(TestCase):
+    def setUp(self):
+        self.user1 = User.objects.create_user(username='admin_user', password='password')
+        self.user2 = User.objects.create_user(username='normal_user', password='password')
+        self.chat = Chat.objects.create(chat_type='group', group_name='Test Group')
+        self.chat.participants.add(self.user1, self.user2)
+        self.chat.group_admin.add(self.user1)
+        self.message = Message.objects.create(chat=self.chat, sender=self.user1, content=b'A message to pin')
+        self.client = APIClient()
+
+    def test_pin_message_api(self):
+        self.client.force_authenticate(user=self.user1)
+        response = self.client.post(f'/api/chats/chat/{self.chat.id}/pin/{self.message.id}/')
+        self.assertEqual(response.status_code, 200)
+        self.chat.refresh_from_db()
+        self.assertEqual(self.chat.pinned_message.id, self.message.id)
+
+    def test_unpin_message_api(self):
+        # First, pin a message
+        self.chat.pinned_message = self.message
+        self.chat.save()
+
+        self.client.force_authenticate(user=self.user1)
+        response = self.client.delete(f'/api/chats/chat/{self.chat.id}/pin/{self.message.id}/')
+        self.assertEqual(response.status_code, 204)
+        self.chat.refresh_from_db()
+        self.assertIsNone(self.chat.pinned_message)
+
+    def test_pin_message_permission_denied(self):
+        # user2 is not an admin
+        self.client.force_authenticate(user=self.user2)
+        response = self.client.post(f'/api/chats/chat/{self.chat.id}/pin/{self.message.id}/')
+        self.assertEqual(response.status_code, 403)

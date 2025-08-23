@@ -2,7 +2,8 @@ from django.urls import path
 from .views import (
     CreateChatView, UpdateChatView, DeleteChatView, AddUserToChatView,
     RemoveUserFromChatView, GetUserChatsView, SearchChatsView,
-    get_chat_participants, LeaveChatView, download_attachment, ReactToMessageView
+    get_chat_participants, LeaveChatView, download_attachment, ReactToMessageView,
+    PinMessageView
 )
 
 urlpatterns = [
@@ -14,6 +15,7 @@ urlpatterns = [
     path('chat/<int:chat_id>/add-users/', AddUserToChatView.as_view(), name='add_users_to_chat'),
     path('chat/<int:chat_id>/remove-users/', RemoveUserFromChatView.as_view(), name='remove_users_from_chat'),
     path('chat/<int:chat_id>/leave/', LeaveChatView.as_view(), name='leave_chat'),
+    path('chat/<int:chat_id>/pin/<int:message_id>/', PinMessageView.as_view(), name='pin_message'),
     path('', GetUserChatsView.as_view(), name='get_user_chats'),
     path('chats/search/', SearchChatsView.as_view(), name='search_chats'),
     path('chat/<int:chat_id>/participants/', get_chat_participants, name='get_chat_participants'),

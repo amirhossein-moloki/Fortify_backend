@@ -243,6 +243,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'message_id': event['message_id']
         }))
 
+    async def pin_message_update(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'pin_message_update',
+            'chat': event['chat']
+        }))
+
     @database_sync_to_async
     def set_message_delivered(self, message_id):
         try:
