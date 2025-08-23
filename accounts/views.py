@@ -7,6 +7,7 @@ from django.contrib.auth import authenticate
 from django.core.mail import send_mail
 from django.contrib.auth.tokens import default_token_generator
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.conf import settings
 from django.utils.encoding import force_str
 from .models import User,Profile
 from django.http import Http404
@@ -15,6 +16,7 @@ from .serializers import UserSerializer, ProfileSerializer, LoginSerializer, Reg
 from django.contrib.auth.forms import PasswordResetForm
 from django_ratelimit.decorators import ratelimit
 from django.template.loader import render_to_string
+from django.utils.decorators import method_decorator
 import logging
 from django.contrib.auth import login
 import random
@@ -53,8 +55,6 @@ class RegisterAPIView(APIView):
         if serializer.is_valid():
             user = serializer.save()
             Profile.objects.create(user=user)
-            refresh = RefreshToken.for_user(user)
-            access_token = str(refresh.access_token)
             token = default_token_generator.make_token(user)
             uid = urlsafe_base64_encode(force_bytes(user.pk))
             try:
@@ -63,39 +63,44 @@ class RegisterAPIView(APIView):
                 logger.error(f"Error sending email: {e}")
                 return Response({"message": "Error sending confirmation email."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
             return Response({
-                "message": "Please confirm your email address to complete the registration.",
-                "access_token": access_token
+                "message": "Please confirm your email address to complete the registration."
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@method_decorator(ratelimit(key='ip', rate='5/m', block=True), name='dispatch')
 class LoginAPIView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
-        if serializer.is_valid():
-            username = serializer.validated_data.get('username')
-            password = serializer.validated_data.get('password')
-            user = authenticate(username=username, password=password)
-            if user is not None:
-                if user.is_active:
-                    try:
-                        send_otp_email(user)
-                        return Response({
-                            "message": "Login successful! Please check your email for the OTP link."
-                        }, status=status.HTTP_200_OK)
-                    except Exception as e:
-                        logger.error(f"Error sending OTP email: {e}")
-                        return Response({"message": "Error sending OTP email."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-                else:
-                    return Response({
-                        "message": "Account is not active. Please check your email for activation."
-                    }, status=status.HTTP_400_BAD_REQUEST)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        username = serializer.validated_data.get('username')
+        password = serializer.validated_data.get('password')
+
+        try:
+            user = User.objects.get(username=username)
+        except User.DoesNotExist:
+            return Response({"message": "Invalid credentials."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not user.check_password(password):
+            return Response({"message": "Invalid credentials."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not user.is_active:
             return Response({
-                "message": "Invalid credentials."
+                "message": "Account is not active. Please check your email for activation."
             }, status=status.HTTP_400_BAD_REQUEST)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            send_otp_email(user)
+            return Response({
+                "message": "Login successful! Please check your email for the OTP link."
+            }, status=status.HTTP_200_OK)
+        except Exception as e:
+            logger.error(f"Error sending OTP email: {e}")
+            return Response({"message": "Error sending OTP email."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 
@@ -133,6 +138,7 @@ class ActivateEmailAPIView(APIView):
             return Response({"message": "Invalid token or user does not exist."}, status=status.HTTP_400_BAD_REQUEST)
 
 # ویو برای بازیابی رمز عبور
+@method_decorator(ratelimit(key='ip', rate='5/m', block=True), name='dispatch')
 class PasswordResetAPIView(APIView):
     permission_classes = [AllowAny]
 
@@ -141,14 +147,15 @@ class PasswordResetAPIView(APIView):
         try:
             user = User.objects.get(email=email)
         except User.DoesNotExist:
+            # Don't reveal whether the user exists or not
             return Response({"message": "If an account exists with this email, a password reset link has been sent."}, status=status.HTTP_200_OK)
 
-        # تولید توکن JWT
-        refresh = RefreshToken.for_user(user)
-        reset_token = str(refresh.access_token)
+        # Generate a secure, single-use token
+        token = default_token_generator.make_token(user)
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
 
         # لینک بازنشانی رمز عبور
-        reset_link = f'https://fortify-frontend.vercel.app/password-reset/{urlsafe_base64_encode(force_bytes(user.pk))}/{reset_token}/'
+        reset_link = f"{settings.FRONTEND_URL}/password-reset-confirm/{uid}/{token}/"
 
         # ارسال ایمیل
         email_subject = 'Password Reset'
@@ -164,10 +171,11 @@ class PasswordResetAPIView(APIView):
             'no-reply@yourdomain.com',
             [user.email],
             fail_silently=False,
-            html_message=email_message  # محتوای HTML
+            html_message=email_message
         )
 
         return Response({"message": "Password reset email sent."}, status=status.HTTP_200_OK)
+
 
 # ویو تایید بازیابی رمز عبور
 class PasswordResetConfirmAPIView(APIView):
@@ -175,42 +183,23 @@ class PasswordResetConfirmAPIView(APIView):
 
     def post(self, request, uidb64, token):
         try:
-            user_id = force_str(urlsafe_base64_decode(uidb64))
-            user = User.objects.get(pk=user_id)
-
-            # بررسی توکن JWT
-            try:
-                AccessToken(token)  # بررسی اعتبار توکن
-            except TokenError:
-                return Response({"message": "Token is invalid or expired."}, status=status.HTTP_400_BAD_REQUEST)
-
-            # تنظیم رمز عبور جدید
-            new_password = request.data.get('password')
-            if new_password:
-                user.set_password(new_password)
-                user.save()
-                return Response({"message": "Password has been reset successfully."}, status=status.HTTP_200_OK)
-            else:
-                return Response({"message": "Password not provided."}, status=status.HTTP_400_BAD_REQUEST)
-        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
-            return Response({"message": "Invalid user."}, status=status.HTTP_400_BAD_REQUEST)
-
-# ویو برای تغییر رمز عبور
-class PasswordChangeAPIView(APIView):
-    permission_classes = [AllowAny]
-    def post(self, request, uidb64, token):
-        password = request.data.get('password')
-        try:
-            uid = force_str(urlsafe_base64_decode(uidb64))  # تبدیل رشته به force_str
+            uid = force_str(urlsafe_base64_decode(uidb64))
             user = User.objects.get(pk=uid)
-            if default_token_generator.check_token(user, token):
-                user.set_password(password)
-                user.save()
-                return Response({"message": "Password changed successfully!"}, status=status.HTTP_200_OK)
-            else:
-                return Response({"message": "Invalid token."}, status=status.HTTP_400_BAD_REQUEST)
         except (TypeError, ValueError, OverflowError, User.DoesNotExist):
-            return Response({"message": "Invalid token or user does not exist."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": "Invalid user link."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check the token
+        if not default_token_generator.check_token(user, token):
+            return Response({"message": "Token is invalid or expired."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Set the new password
+        new_password = request.data.get('password')
+        if not new_password:
+            return Response({"message": "Password not provided."}, status=status.HTTP_400_BAD_REQUEST)
+
+        user.set_password(new_password)
+        user.save()
+        return Response({"message": "Password has been reset successfully."}, status=status.HTTP_200_OK)
 
 
 # ویو برای آپدیت پروفایل کاربری با JWT
@@ -270,48 +259,46 @@ class DeleteAccountAPIView(APIView):
         user.delete()
         return Response({"message": "Account deleted successfully!"}, status=status.HTTP_204_NO_CONTENT)
 
+@method_decorator(ratelimit(key='ip', rate='5/m', block=True), name='dispatch')
 class OTPVerifyAPIView(APIView):
     permission_classes = [AllowAny]
 
-    def get(self, request, otp):
+    def post(self, request):
+        otp = request.data.get('otp')
+        if not otp:
+            return Response({"message": "OTP not provided."}, status=status.HTTP_400_BAD_REQUEST)
+
         try:
             # جستجوی کاربر بر اساس کد OTP
             user = User.objects.get(otp=otp)
 
             # بررسی زمان انقضای OTP
-            if not user.otp_expiration or user.otp_expiration < timezone.now():
+            if not user.is_otp_valid():
                 return Response({
                     "message": "OTP expired or invalid. Please request a new one."
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-            # بررسی اعتبار OTP
-            if user.is_otp_valid():
-                # اعتبار سنجی موفق
-                # ایجاد توکن JWT
-                refresh = RefreshToken.for_user(user)
-                access_token = refresh.access_token
+            # اعتبار سنجی موفق
+            # ایجاد توکن JWT
+            refresh = RefreshToken.for_user(user)
+            access_token = refresh.access_token
 
-                # پس از ورود، OTP پاک می‌شود
-                user.otp = None  # OTP را پاک می‌کنیم
-                user.otp_expiration = None  # انقضای OTP را پاک می‌کنیم
-                user.save()
+            # پس از ورود، OTP پاک می‌شود
+            user.otp = None
+            user.otp_expiration = None
+            user.save()
 
-                # بازگرداندن توکن‌ها و نام کاربری در پاسخ
-                return Response({
-                    "message": "Login successful!",
-                    "access_token": str(access_token),
-                    "refresh_token": str(refresh),
-                    "username": user.username  # اضافه کردن نام کاربری به پاسخ
-                }, status=status.HTTP_200_OK)
-
-            else:
-                return Response({
-                    "message": "Invalid OTP."
-                }, status=status.HTTP_400_BAD_REQUEST)
+            # بازگرداندن توکن‌ها و نام کاربری در پاسخ
+            return Response({
+                "message": "Login successful!",
+                "access_token": str(access_token),
+                "refresh_token": str(refresh),
+                "username": user.username
+            }, status=status.HTTP_200_OK)
 
         except User.DoesNotExist:
             return Response({
-                "message": "User not found or invalid OTP."
+                "message": "Invalid OTP."
             }, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -346,6 +333,8 @@ class UserProfileView(APIView):
             return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
 
 class SearchUserView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def get(self, request):
         username = request.query_params.get('username', None)
         email = request.query_params.get('email', None)
@@ -373,6 +362,7 @@ class SearchUserView(APIView):
 
 
 
+@ratelimit(key='ip', rate='5/m', block=True)
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def change_password(request):
@@ -403,6 +393,7 @@ def change_password(request):
         return Response({"error": "New password is required."}, status=status.HTTP_400_BAD_REQUEST)
 
 
+@method_decorator(ratelimit(key='ip', rate='5/m', block=True), name='dispatch')
 class ResendActivationEmailAPIView(APIView):
     permission_classes = [AllowAny]
 
@@ -422,6 +413,7 @@ class ResendActivationEmailAPIView(APIView):
                             status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+@method_decorator(ratelimit(key='ip', rate='5/m', block=True), name='dispatch')
 class ResendOTPAPIView(APIView):
     permission_classes = [AllowAny]
 
