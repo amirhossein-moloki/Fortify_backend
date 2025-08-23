@@ -3,6 +3,7 @@ from urllib.parse import parse_qs
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 from .models import Message, Attachment, Chat
+from contacts.models import Block
 from django.contrib.auth import get_user_model
 from rest_framework.exceptions import AuthenticationFailed
 from encryption.utils import Encryptor, get_or_create_shared_key
@@ -72,10 +73,22 @@ class ChatConsumer(AsyncWebsocketConsumer):
         action = data.get('action')
 
         if action == 'send':
+            sender = self.scope['user']
+            chat = await database_sync_to_async(Chat.objects.get)(id=self.chat_id)
+            participants = await database_sync_to_async(list)(chat.participants.all())
+
+            for participant in participants:
+                if participant != sender:
+                    is_blocked = await self.is_blocked(sender, participant)
+                    if is_blocked:
+                        await self.send(text_data=json.dumps({
+                            'error': 'You cannot send messages to this user.'
+                        }))
+                        return
+
             message_content = data.get('message')
             file = data.get('file')
             reply_to_id = data.get('reply_to')
-            sender = self.scope['user']
 
             encrypted_content = self.encryptor.encrypt(message_content)
             message = await self.save_message(sender, encrypted_content, reply_to_id)
@@ -248,6 +261,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'type': 'pin_message_update',
             'chat': event['chat']
         }))
+
+    @database_sync_to_async
+    def is_blocked(self, user1, user2):
+        return Block.objects.filter(blocker=user1, blocked=user2).exists() or \
+               Block.objects.filter(blocker=user2, blocked=user1).exists()
 
     @database_sync_to_async
     def set_message_delivered(self, message_id):

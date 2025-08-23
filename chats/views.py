@@ -8,6 +8,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from .models import Chat, Role, Message, Reaction
+from contacts.models import Block
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import PermissionDenied
 from django.http import HttpResponse
@@ -200,7 +201,14 @@ class AddUserToChatView(APIView):
             # بررسی اینکه آیا کاربر قبلاً عضو چت است یا نه
             if new_user in chat.participants.all():
                 already_in_chat.append(username)
-                continue  # کاربر از قبل عضو است
+                continue
+
+            # Check for blocking conflicts
+            existing_participants = chat.participants.all()
+            for participant in existing_participants:
+                if Block.objects.filter(blocker=new_user, blocked=participant).exists() or \
+                   Block.objects.filter(blocker=participant, blocked=new_user).exists():
+                    return Response({"error": f"Cannot add {username} due to a block in place with an existing member."}, status=status.HTTP_400_BAD_REQUEST)
 
             chat.participants.add(new_user)
             new_users.append(new_user)

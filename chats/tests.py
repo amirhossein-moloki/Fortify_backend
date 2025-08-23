@@ -2,6 +2,7 @@ from django.test import TestCase
 from channels.testing import WebsocketCommunicator
 from django.contrib.auth import get_user_model
 from .models import Chat, Message, Reaction
+from contacts.models import Block
 from Fortify_back.asgi import application
 from encryption.utils import get_or_create_shared_key, Encryptor
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -232,3 +233,60 @@ class PinMessageTestCase(TestCase):
         self.client.force_authenticate(user=self.user2)
         response = self.client.post(f'/api/chats/chat/{self.chat.id}/pin/{self.message.id}/')
         self.assertEqual(response.status_code, 403)
+
+
+class BlockingLogicTestCase(TestCase):
+    def setUp(self):
+        self.user1 = User.objects.create_user(username='user1', password='password')
+        self.user2 = User.objects.create_user(username='user2', password='password')
+        self.user3 = User.objects.create_user(username='user3', password='password')
+        self.client = APIClient()
+
+    async def test_send_message_when_blocked(self):
+        from channels.db import database_sync_to_async
+        # user1 blocks user2
+        await database_sync_to_async(Block.objects.create)(blocker=self.user1, blocked=self.user2)
+
+        # Direct chat between user1 and user2
+        chat = await database_sync_to_async(Chat.objects.create)(chat_type='direct')
+        await database_sync_to_async(chat.participants.add)(self.user1, self.user2)
+
+        # user2 tries to send a message to user1
+        refresh2 = RefreshToken.for_user(self.user2)
+        token2 = str(refresh2.access_token)
+        communicator2 = WebsocketCommunicator(application, f"/ws/chat/{chat.id}/?token={token2}")
+        connected, _ = await communicator2.connect()
+        self.assertTrue(connected)
+
+        await communicator2.send_to(text_data=json.dumps({
+            'action': 'send',
+            'message': 'This should not go through',
+        }))
+
+        # Check for error message
+        response = await communicator2.receive_from()
+        data = json.loads(response)
+        self.assertIn('error', data)
+        self.assertEqual(data['error'], 'You cannot send messages to this user.')
+
+        # Make sure the message was not saved
+        self.assertEqual(await Message.objects.acount(), 0)
+
+        await communicator2.disconnect()
+
+    def test_add_blocked_user_to_group(self):
+        # Group chat with user1 and user2
+        chat = Chat.objects.create(chat_type='group', group_name='Test Group')
+        chat.participants.add(self.user1, self.user2)
+        chat.group_admin.add(self.user1)
+
+        # user1 blocks user3
+        Block.objects.create(blocker=self.user1, blocked=self.user3)
+
+        # user1 (admin) tries to add user3 to the group
+        self.client.force_authenticate(user=self.user1)
+        response = self.client.post(f'/api/chats/chat/{chat.id}/add-users/', {'usernames': [self.user3.username]}, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('error', response.data)
+        self.assertEqual(response.data['error'], f"Cannot add {self.user3.username} due to a block in place with an existing member.")

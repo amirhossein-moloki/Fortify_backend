@@ -1,6 +1,41 @@
-from rest_framework import generics, permissions
-from .models import Contact
+from rest_framework import generics, permissions, status
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from django.contrib.auth import get_user_model
+from .models import Contact, Block
 from .serializers import ContactSerializer
+
+User = get_user_model()
+
+class BlockUserView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, username):
+        try:
+            blocked_user = User.objects.get(username=username)
+        except User.DoesNotExist:
+            return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if request.user == blocked_user:
+            return Response({"error": "You cannot block yourself."}, status=status.HTTP_400_BAD_REQUEST)
+
+        _, created = Block.objects.get_or_create(blocker=request.user, blocked=blocked_user)
+
+        if created:
+            return Response({"message": f"User {username} has been blocked."}, status=status.HTTP_201_CREATED)
+        return Response({"message": f"User {username} was already blocked."}, status=status.HTTP_200_OK)
+
+    def delete(self, request, username):
+        try:
+            blocked_user = User.objects.get(username=username)
+            block = Block.objects.get(blocker=request.user, blocked=blocked_user)
+            block.delete()
+            return Response({"message": f"User {username} has been unblocked."}, status=status.HTTP_204_NO_CONTENT)
+        except User.DoesNotExist:
+            return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+        except Block.DoesNotExist:
+            return Response({"error": "You have not blocked this user."}, status=status.HTTP_404_NOT_FOUND)
+
 
 class ContactListView(generics.ListAPIView):
     serializer_class = ContactSerializer
@@ -8,10 +43,6 @@ class ContactListView(generics.ListAPIView):
 
     def get_queryset(self):
         return Contact.objects.filter(user=self.request.user)
-
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
 
 class FriendRequestActionView(APIView):
     permission_classes = [permissions.IsAuthenticated]
