@@ -141,7 +141,13 @@ SIMPLE_JWT = {
 AUTH_USER_MODEL = 'accounts.User'
 
 # CORS Settings
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOWED_ORIGINS = [
+    # IMPORTANT: Replace this with your actual frontend domain.
+    # For example: 'https://your-frontend.com'
+    'https://fortify-frontend.vercel.app', # From password reset link
+    'http://localhost:3000', # For local development
+]
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_METHODS = [
     'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS',
@@ -149,6 +155,9 @@ CORS_ALLOW_METHODS = [
 CORS_ALLOW_HEADERS = [
     'content-type', 'accept', 'Authorization', 'X-Requested-With', 'Access-Control-Allow-Origin',
 ]
+
+# Frontend URL
+FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3000')
 
 # Channels settings
 if 'test' in sys.argv:
