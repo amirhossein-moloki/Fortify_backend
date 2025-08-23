@@ -80,6 +80,19 @@ class Attachment(models.Model):
         return self.file_name
 
 
+class Reaction(models.Model):
+    message = models.ForeignKey(Message, on_delete=models.CASCADE, related_name='reactions')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='reactions')
+    emoji = models.CharField(max_length=10)  # ذخیره اموجی به صورت کاراکتر
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('message', 'user', 'emoji')
+
+    def __str__(self):
+        return f'{self.user.username} reacted with {self.emoji} to message {self.message.id}'
+
+
 # مدل Role برای مدیریت دسترسی‌ها
 class Role(models.Model):
     ROLE_CHOICES = (

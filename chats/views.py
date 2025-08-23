@@ -1,4 +1,4 @@
-from .serializers import GetChatsSerializer
+from .serializers import GetChatsSerializer, ReactionSerializer
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.decorators import api_view
 from .serializers import ChatSerializer
@@ -7,7 +7,7 @@ from accounts.models import User
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from .models import Chat, Role
+from .models import Chat, Role, Message, Reaction
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import PermissionDenied
 from django.http import HttpResponse
@@ -16,6 +16,9 @@ from encryption.utils import Encryptor, get_or_create_shared_key
 from django.db.models import Count, Q, OuterRef, Subquery
 import base64
 from io import BytesIO
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
+
 class CreateChatView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -377,3 +380,72 @@ def download_attachment(request, attachment_id):
     response = HttpResponse(output_file.getvalue(), content_type=attachment.file_type)
     response['Content-Disposition'] = f'attachment; filename="{attachment.file_name}"'
     return response
+
+
+class ReactToMessageView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, message_id):
+        emoji = request.data.get('emoji')
+        if not emoji:
+            return Response({"error": "Emoji is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            message = Message.objects.get(id=message_id)
+        except Message.DoesNotExist:
+            return Response({"error": "Message not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if request.user not in message.chat.participants.all():
+            return Response({"error": "You are not a participant in this chat."}, status=status.HTTP_403_FORBIDDEN)
+
+        reaction, created = Reaction.objects.get_or_create(
+            message=message,
+            user=request.user,
+            defaults={'emoji': emoji}
+        )
+        reaction.emoji = emoji
+        reaction.save()
+
+
+        serializer = ReactionSerializer(reaction)
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f"chat_{message.chat.id}",
+            {
+                "type": "reaction_add",
+                "reaction": serializer.data,
+            },
+        )
+
+        if created:
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def delete(self, request, message_id):
+        emoji = request.data.get('emoji')
+        if not emoji:
+            return Response({"error": "Emoji is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            reaction = Reaction.objects.get(
+                message_id=message_id,
+                user=request.user,
+                emoji=emoji
+            )
+            reaction_id = reaction.id
+            message_chat_id = reaction.message.chat.id
+            reaction.delete()
+
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f"chat_{message_chat_id}",
+                {
+                    "type": "reaction_remove",
+                    "reaction_id": reaction_id,
+                    "message_id": message_id,
+                },
+            )
+
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except Reaction.DoesNotExist:
+            return Response({"error": "Reaction not found."}, status=status.HTTP_404_NOT_FOUND)

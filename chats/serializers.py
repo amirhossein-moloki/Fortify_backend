@@ -1,8 +1,15 @@
 from rest_framework import serializers
-from .models import Chat, Message, Attachment, Role
+from .models import Chat, Message, Attachment, Role, Reaction
 from accounts.serializers import UserSerializer
 from .models import Chat, Message
 from rest_framework import serializers
+
+class ReactionSerializer(serializers.ModelSerializer):
+    user = UserSerializer(read_only=True)
+
+    class Meta:
+        model = Reaction
+        fields = ('id', 'user', 'emoji', 'created_at')
 
 # سریالایزر برای مدل Chat
 class ChatSerializer(serializers.ModelSerializer):
@@ -56,10 +63,11 @@ class MessageSerializer(serializers.ModelSerializer):
     timestamp = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
     read_by = UserSerializer(many=True)  # نمایش کاربرانی که پیام را خوانده‌اند
     reply_to = RecursiveField(read_only=True)
+    reactions = ReactionSerializer(many=True, read_only=True)
 
     class Meta:
         model = Message
-        fields = ('id', 'chat', 'sender', 'content', 'timestamp', 'is_read', 'read_by', 'is_edited', 'is_deleted', 'reply_to')
+        fields = ('id', 'chat', 'sender', 'content', 'timestamp', 'is_read', 'read_by', 'is_edited', 'is_deleted', 'reply_to', 'reactions')
 
 # سریالایزر برای مدل Attachment
 class AttachmentSerializer(serializers.ModelSerializer):

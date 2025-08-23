@@ -1,16 +1,58 @@
 from django.test import TestCase
 from channels.testing import WebsocketCommunicator
 from django.contrib.auth import get_user_model
-from .models import Chat, Message
+from .models import Chat, Message, Reaction
 from Fortify_back.asgi import application
 from encryption.utils import get_or_create_shared_key, Encryptor
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework.test import APIClient
 import json
 import base64
 from django.core.files.base import ContentFile
 from io import BytesIO
 
 User = get_user_model()
+
+class ReactionTestCase(TestCase):
+    def setUp(self):
+        self.user1 = User.objects.create_user(username='user1', password='password')
+        self.user2 = User.objects.create_user(username='user2', password='password')
+        self.user3 = User.objects.create_user(username='user3', password='password')
+        self.chat = Chat.objects.create(chat_type='direct')
+        self.chat.participants.add(self.user1, self.user2)
+        self.message = Message.objects.create(chat=self.chat, sender=self.user1, content=b'Test Message')
+        self.client = APIClient()
+
+    def test_create_reaction(self):
+        reaction = Reaction.objects.create(message=self.message, user=self.user1, emoji='👍')
+        self.assertEqual(Reaction.objects.count(), 1)
+        self.assertEqual(reaction.emoji, '👍')
+
+    def test_add_reaction_api(self):
+        self.client.force_authenticate(user=self.user1)
+        response = self.client.post(f'/api/chats/messages/{self.message.id}/react/', {'emoji': '❤️'}, format='json')
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(Reaction.objects.count(), 1)
+        self.assertEqual(Reaction.objects.first().emoji, '❤️')
+
+    def test_remove_reaction_api(self):
+        # First, add a reaction
+        Reaction.objects.create(message=self.message, user=self.user1, emoji='❤️')
+        self.assertEqual(Reaction.objects.count(), 1)
+
+        # Now, remove it
+        self.client.force_authenticate(user=self.user1)
+        response = self.client.delete(f'/api/chats/messages/{self.message.id}/react/', {'emoji': '❤️'}, format='json')
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(Reaction.objects.count(), 0)
+
+    def test_add_reaction_permission_denied(self):
+        # user3 is not in the chat
+        self.client.force_authenticate(user=self.user3)
+        response = self.client.post(f'/api/chats/messages/{self.message.id}/react/', {'emoji': '👍'}, format='json')
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(Reaction.objects.count(), 0)
+
 
 class ChatTestCase(TestCase):
     def setUp(self):

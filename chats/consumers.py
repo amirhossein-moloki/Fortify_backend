@@ -230,6 +230,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'user': event['user']
         }))
 
+    async def reaction_add(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'reaction_add',
+            'reaction': event['reaction']
+        }))
+
+    async def reaction_remove(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'reaction_remove',
+            'reaction_id': event['reaction_id'],
+            'message_id': event['message_id']
+        }))
+
     @database_sync_to_async
     def set_message_delivered(self, message_id):
         try:
