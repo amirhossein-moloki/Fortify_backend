@@ -1,7 +1,7 @@
 from django.test import TestCase
 from channels.testing import WebsocketCommunicator
 from django.contrib.auth import get_user_model
-from .models import Chat, Message, Reaction
+from .models import Chat, Message, Reaction, Poll, PollOption, PollVote
 from contacts.models import Block
 from Fortify_back.asgi import application
 from encryption.utils import get_or_create_shared_key, Encryptor
@@ -200,6 +200,37 @@ class ChatFeaturesTestCase(TestCase):
 
         await communicator1.disconnect()
 
+    async def test_audio_attachment(self):
+        from channels.db import database_sync_to_async
+        refresh1 = RefreshToken.for_user(self.user1)
+        token1 = str(refresh1.access_token)
+        communicator1 = WebsocketCommunicator(application, f"/ws/chat/{self.chat.id}/?token={token1}")
+        await communicator1.connect()
+
+        audio_content = b"This is a test audio file."
+        file_data = {
+            'content': base64.b64encode(audio_content).decode(),
+            'name': 'test.mp3',
+            'type': 'audio/mpeg',
+            'attachment_type': 'audio'
+        }
+        await communicator1.send_to(text_data=json.dumps({
+            'action': 'send',
+            'message': 'Here is an audio file.',
+            'file': file_data,
+        }))
+
+        response = await communicator1.receive_from()
+        data = json.loads(response)
+        message_id = data['message_id']
+
+        message = await Message.objects.aget(id=message_id)
+        attachment = await message.attachments.aget()
+
+        self.assertEqual(attachment.type, 'audio')
+
+        await communicator1.disconnect()
+
 class PinMessageTestCase(TestCase):
     def setUp(self):
         self.user1 = User.objects.create_user(username='admin_user', password='password')
@@ -347,3 +378,49 @@ class ForwardMessageTestCase(TestCase):
 
         self.assertEqual(response.status_code, 400) # No messages were forwarded
         self.assertFalse(Message.objects.filter(chat=self.chat2).exists())
+
+
+class PollTestCase(TestCase):
+    def setUp(self):
+        self.user1 = User.objects.create_user(username='user1', password='password')
+        self.user2 = User.objects.create_user(username='user2', password='password')
+        self.chat = Chat.objects.create(chat_type='group', group_name='Test Group')
+        self.chat.participants.add(self.user1, self.user2)
+        self.client = APIClient()
+
+    async def test_create_poll_websocket(self):
+        from channels.db import database_sync_to_async
+        refresh1 = RefreshToken.for_user(self.user1)
+        token1 = str(refresh1.access_token)
+        communicator = WebsocketCommunicator(application, f"/ws/chat/{self.chat.id}/?token={token1}")
+        connected, _ = await communicator.connect()
+        self.assertTrue(connected)
+
+        question = "What's for lunch?"
+        options = ["Pizza", "Salad"]
+        await communicator.send_to(text_data=json.dumps({
+            'action': 'send_poll',
+            'question': question,
+            'options': options,
+        }))
+
+        response = await communicator.receive_from()
+        data = json.loads(response)
+
+        self.assertEqual(data['poll']['question'], question)
+        self.assertEqual(len(data['poll']['options']), 2)
+
+        await communicator.disconnect()
+
+    def test_vote_on_poll(self):
+        # Create a poll first
+        poll = Poll.objects.create(question="Test Poll")
+        option1 = PollOption.objects.create(poll=poll, text="Option 1")
+        message = Message.objects.create(chat=self.chat, sender=self.user1, poll=poll)
+
+        # user2 votes on the poll
+        self.client.force_authenticate(user=self.user2)
+        response = self.client.post(f'/api/chats/polls/{poll.id}/options/{option1.id}/vote/')
+        self.assertEqual(response.status_code, 201)
+
+        self.assertTrue(PollVote.objects.filter(poll_option=option1, user=self.user2).exists())

@@ -51,6 +51,7 @@ class Message(models.Model):
     is_deleted = models.BooleanField(default=False)  # پیام حذف‌شده
     is_forwarded = models.BooleanField(default=False)
     forwarded_from = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='forwarded_messages')
+    poll = models.OneToOneField('Poll', on_delete=models.CASCADE, null=True, blank=True)
 
     def edit_message(self, new_content):
         self.content = new_content
@@ -73,11 +74,18 @@ class Message(models.Model):
 
 # مدل Attachment
 class Attachment(models.Model):
+    ATTACHMENT_TYPES = (
+        ('image', 'Image'),
+        ('audio', 'Audio'),
+        ('file', 'File'),
+    )
+
     message = models.ForeignKey(Message, on_delete=models.CASCADE, related_name='attachments')
     file = models.FileField(upload_to='chat_attachments/')
     file_name = models.CharField(max_length=255)
     file_type = models.CharField(max_length=50)  # مثل image/png, video/mp4
     file_size = models.PositiveIntegerField()  # به بایت
+    type = models.CharField(max_length=10, choices=ATTACHMENT_TYPES, default='file')
 
     def __str__(self):
         return self.file_name
@@ -109,3 +117,26 @@ class Role(models.Model):
 
     def __str__(self):
         return f"{self.user.username} - {self.role} in {self.chat}"
+
+
+class Poll(models.Model):
+    question = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.question
+
+class PollOption(models.Model):
+    poll = models.ForeignKey(Poll, on_delete=models.CASCADE, related_name='options')
+    text = models.CharField(max_length=255)
+
+    def __str__(self):
+        return self.text
+
+class PollVote(models.Model):
+    poll_option = models.ForeignKey(PollOption, on_delete=models.CASCADE, related_name='votes')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='votes')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('poll_option', 'user')

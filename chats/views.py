@@ -1,4 +1,4 @@
-from .serializers import GetChatsSerializer, ReactionSerializer, MessageSerializer
+from .serializers import GetChatsSerializer, ReactionSerializer, MessageSerializer, PollSerializer
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.decorators import api_view
 from .serializers import ChatSerializer
@@ -7,9 +7,10 @@ from accounts.models import User
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from .models import Chat, Role, Message, Reaction
+from .models import Chat, Role, Message, Reaction, Poll, PollOption, PollVote
 from contacts.models import Block
 from rest_framework.permissions import IsAuthenticated
+from django.shortcuts import get_object_or_404
 from rest_framework.exceptions import PermissionDenied
 from django.http import HttpResponse
 from .models import Attachment
@@ -594,3 +595,34 @@ class ForwardMessageView(APIView):
             return Response({"error": "Message could not be forwarded to any of the provided chats."}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response({"message": "Message forwarded successfully."}, status=status.HTTP_200_OK)
+
+
+class VoteOnPollView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, poll_id, option_id):
+        poll_option = get_object_or_404(PollOption, id=option_id, poll_id=poll_id)
+        poll = poll_option.poll
+        message = get_object_or_404(Message, poll=poll)
+
+        if request.user not in message.chat.participants.all():
+            return Response({"error": "You are not a participant in this chat."}, status=status.HTTP_403_FORBIDDEN)
+
+        # Check if the user has already voted on this poll
+        if PollVote.objects.filter(poll_option__poll=poll, user=request.user).exists():
+            return Response({"error": "You have already voted on this poll."}, status=status.HTTP_400_BAD_REQUEST)
+
+        vote = PollVote.objects.create(poll_option=poll_option, user=request.user)
+
+        # WebSocket event for real-time update
+        channel_layer = get_channel_layer()
+        serializer = PollSerializer(poll)
+        async_to_sync(channel_layer.group_send)(
+            f"chat_{message.chat.id}",
+            {
+                "type": "poll_vote_update",
+                "poll": serializer.data,
+            },
+        )
+
+        return Response({"message": "Vote cast successfully."}, status=status.HTTP_201_CREATED)

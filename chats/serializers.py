@@ -1,8 +1,33 @@
 from rest_framework import serializers
-from .models import Chat, Message, Attachment, Role, Reaction
+from .models import Chat, Message, Attachment, Role, Reaction, Poll, PollOption, PollVote
 from accounts.serializers import UserSerializer
 from .models import Chat, Message
 from rest_framework import serializers
+
+class PollVoteSerializer(serializers.ModelSerializer):
+    user = UserSerializer(read_only=True)
+
+    class Meta:
+        model = PollVote
+        fields = ('id', 'user', 'created_at')
+
+class PollOptionSerializer(serializers.ModelSerializer):
+    votes = PollVoteSerializer(many=True, read_only=True)
+    vote_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PollOption
+        fields = ('id', 'text', 'votes', 'vote_count')
+
+    def get_vote_count(self, obj):
+        return obj.votes.count()
+
+class PollSerializer(serializers.ModelSerializer):
+    options = PollOptionSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Poll
+        fields = ('id', 'question', 'options', 'created_at')
 
 class ReactionSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
@@ -69,6 +94,17 @@ class RecursiveField(serializers.Serializer):
         serializer = self.parent.parent.__class__(value, context=self.context)
         return serializer.data
 
+class WebsocketMessageSerializer(serializers.ModelSerializer):
+    sender = UserSerializer(read_only=True)
+    reactions = ReactionSerializer(many=True, read_only=True)
+    forwarded_from = UserSerializer(read_only=True)
+    poll = PollSerializer(read_only=True)
+
+    class Meta:
+        model = Message
+        fields = ('id', 'sender', 'content', 'timestamp', 'is_read', 'read_by', 'is_edited', 'is_deleted', 'reply_to', 'reactions', 'is_forwarded', 'forwarded_from', 'poll')
+
+
 class MessageSerializer(serializers.ModelSerializer):
     sender = UserSerializer()  # نمایش فرستنده پیام
     chat = ChatSerializer()  # نمایش چت مربوطه
@@ -77,10 +113,11 @@ class MessageSerializer(serializers.ModelSerializer):
     reply_to = RecursiveField(read_only=True)
     reactions = ReactionSerializer(many=True, read_only=True)
     forwarded_from = UserSerializer(read_only=True)
+    poll = PollSerializer(read_only=True)
 
     class Meta:
         model = Message
-        fields = ('id', 'chat', 'sender', 'content', 'timestamp', 'is_read', 'read_by', 'is_edited', 'is_deleted', 'reply_to', 'reactions', 'is_forwarded', 'forwarded_from')
+        fields = ('id', 'chat', 'sender', 'content', 'timestamp', 'is_read', 'read_by', 'is_edited', 'is_deleted', 'reply_to', 'reactions', 'is_forwarded', 'forwarded_from', 'poll')
 
 # سریالایزر برای مدل Attachment
 class AttachmentSerializer(serializers.ModelSerializer):
@@ -89,7 +126,7 @@ class AttachmentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Attachment
-        fields = ('id', 'message', 'file', 'file_name', 'file_type', 'file_size', 'url')
+        fields = ('id', 'message', 'file', 'file_name', 'file_type', 'file_size', 'url', 'type')
 
 # سریالایزر برای مدل Role
 class RoleSerializer(serializers.ModelSerializer):
