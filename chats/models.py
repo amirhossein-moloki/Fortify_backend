@@ -40,10 +40,12 @@ class Chat(models.Model):
 class Message(models.Model):
     chat = models.ForeignKey(Chat, on_delete=models.CASCADE, related_name='messages')
     sender = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sent_messages')
-    content = models.TextField(null=True, blank=True)
+    content = models.BinaryField(null=True, blank=True)
     timestamp = models.DateTimeField(auto_now_add=True)
+    reply_to = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='replies')
     is_read = models.BooleanField(default=False)
     read_by = models.ManyToManyField(User, related_name='read_messages', blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
     is_edited = models.BooleanField(default=False)  # پیام ویرایش‌شده
     is_deleted = models.BooleanField(default=False)  # پیام حذف‌شده
 

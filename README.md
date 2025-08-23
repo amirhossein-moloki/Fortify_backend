@@ -1,13 +1,15 @@
 # Fortify-backend
 
-This is the backend for the Fortify secure chat application. It's built with Django and Django Rest Framework.
+This is the backend for the Fortify secure chat application. It's built with Django and Django Rest Framework and features end-to-end encryption for all conversations.
 
 ## Features
 
 - User authentication (signup, login, logout)
-- Real-time chat with Django Channels
+- User authentication (signup, login, logout)
+- End-to-end encrypted real-time chat with Django Channels
 - Contact management (add, remove, accept/reject friend requests)
 - Real-time notifications
+- Secure key exchange using Diffie-Hellman
 
 ## Installation
 
