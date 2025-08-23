@@ -10,6 +10,12 @@ from rest_framework.views import APIView
 from .models import Chat, Role
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import PermissionDenied
+from django.http import HttpResponse
+from .models import Attachment
+from encryption.utils import Encryptor, get_or_create_shared_key
+from django.db.models import Count, Q, OuterRef, Subquery
+import base64
+from io import BytesIO
 class CreateChatView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -291,13 +297,22 @@ class LeaveChatView(APIView):
 
 class GetUserChatsView(APIView):
     permission_classes = [IsAuthenticated]
-    authentication_classes = [JWTAuthentication]  # اضافه کردن احراز هویت JWT
+    authentication_classes = [JWTAuthentication]
 
     def get(self, request, *args, **kwargs):
-        user = request.user  # کاربر احراز هویت شده از طریق توکن JWT
-        chats = Chat.objects.filter(participants=user)
+        user = request.user
 
-        # استفاده از سریالایزر برای چت‌ها
+        last_message_subquery = Message.objects.filter(
+            chat=OuterRef('pk'), is_deleted=False
+        ).order_by('-timestamp').values('content')[:1]
+
+        chats = Chat.objects.filter(participants=user).prefetch_related(
+            'participants', 'group_admin'
+        ).annotate(
+            unread_count=Count('messages', filter=Q(messages__is_read=False) & ~Q(messages__read_by=user)),
+            last_message_content=Subquery(last_message_subquery)
+        )
+
         serializer = GetChatsSerializer(chats, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -329,3 +344,36 @@ def get_chat_participants(request, chat_id):
     # مقداردهی سریالایزر با ارسال context برای دسترسی به request
     serializer = ChatSerializer(chat, context={'request': request})
     return Response(serializer.data)
+
+@api_view(['GET'])
+def download_attachment(request, attachment_id):
+    user = request.user
+    try:
+        attachment = Attachment.objects.get(id=attachment_id)
+    except Attachment.DoesNotExist:
+        raise NotFound('Attachment not found')
+
+    chat = attachment.message.chat
+    if user not in chat.participants.all():
+        raise PermissionDenied('You are not authorized to view this attachment')
+
+    other_user = chat.participants.exclude(id=user.id).first()
+    if not other_user:
+        raise PermissionDenied('Cannot determine the other user to create a shared key')
+
+    shared_key_str = get_or_create_shared_key(user, other_user)
+    shared_key = base64.b64decode(shared_key_str)
+    encryptor = Encryptor(shared_key)
+
+    encrypted_file = attachment.file
+    encrypted_file.open('rb')
+
+    output_file = BytesIO()
+    encryptor.decrypt_file(encrypted_file, output_file)
+    output_file.seek(0)
+
+    encrypted_file.close()
+
+    response = HttpResponse(output_file.getvalue(), content_type=attachment.file_type)
+    response['Content-Disposition'] = f'attachment; filename="{attachment.file_name}"'
+    return response

@@ -1,60 +1,43 @@
-import jwt
 from channels.db import database_sync_to_async
-from django.conf import settings
-from django.contrib.auth.models import User
+from django.contrib.auth import get_user_model
 from urllib.parse import parse_qs
 from channels.exceptions import DenyConnection
+from rest_framework_simplejwt.tokens import AccessToken
+from rest_framework.exceptions import AuthenticationFailed
 
+User = get_user_model()
 
-class JWTAuthMiddleware:
-    """
-    Middleware to authenticate WebSocket requests with JWT token.
-    """
-
+class TokenAuthMiddleware:
     def __init__(self, inner):
         self.inner = inner
 
     async def __call__(self, scope, receive, send):
-        # ابتدا بررسی هدر Authorization برای توکن
-        token = None
-        for header in scope.get('headers', []):
-            if header[0] == b'authorization':
-                token = header[1].decode().split(' ')[1]
-                break
+        query_params = parse_qs(scope.get('query_string', b'').decode())
+        token = query_params.get('token', [None])[0]
 
-        # اگر توکن در هدر نباشد، از URL استخراج می‌کنیم
         if not token:
-            query_params = parse_qs(scope.get('query_string').decode())
-            token = query_params.get('token', [None])[0]
+            headers = dict(scope['headers'])
+            if b'authorization' in headers:
+                token = headers[b'authorization'].decode().split(' ')[1]
 
-        # اگر توکن موجود باشد، آن را اعتبارسنجی می‌کنیم
-        if token:
-            try:
-                payload = jwt.decode(token, settings.SECRET_KEY, algorithms=['HS256'])
-                user = await self.get_user(payload['user_id'])
-                scope['user'] = user  # اضافه کردن کاربر به scope
-            except jwt.ExpiredSignatureError:
-                await send({
-                    "type": "websocket.close",
-                    "code": 4000  # کد 4000 نشان‌دهنده مشکل توکن منقضی‌شده است
-                })
-                raise DenyConnection("Token has expired.")
-            except jwt.InvalidTokenError:
-                await send({
-                    "type": "websocket.close",
-                    "code": 4000  # کد 4000 برای توکن نامعتبر
-                })
-                raise DenyConnection("Invalid token.")
-        else:
-            await send({
-                "type": "websocket.close",
-                "code": 4000  # در صورتی که هیچ توکنی وجود نداشته باشد
-            })
+        if not token:
             raise DenyConnection("No token provided.")
+
+        try:
+            user = await self.get_user_from_token(token)
+            if user is None:
+                raise AuthenticationFailed("Invalid token")
+            scope['user'] = user
+        except AuthenticationFailed as e:
+            raise DenyConnection(str(e))
 
         return await self.inner(scope, receive, send)
 
     @database_sync_to_async
-    def get_user(self, user_id):
-        """ دریافت کاربر از ID """
-        return User.objects.get(id=user_id)
+    def get_user_from_token(self, token):
+        try:
+            access_token = AccessToken(token)
+            user_id = access_token['user_id']
+            return User.objects.get(id=user_id)
+        except (Exception, AuthenticationFailed):
+            return None

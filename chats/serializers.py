@@ -45,23 +45,30 @@ class ChatSerializer(serializers.ModelSerializer):
 
 
 # سریالایزر برای مدل Message
+class RecursiveField(serializers.Serializer):
+    def to_representation(self, value):
+        serializer = self.parent.parent.__class__(value, context=self.context)
+        return serializer.data
+
 class MessageSerializer(serializers.ModelSerializer):
     sender = UserSerializer()  # نمایش فرستنده پیام
     chat = ChatSerializer()  # نمایش چت مربوطه
     timestamp = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
     read_by = UserSerializer(many=True)  # نمایش کاربرانی که پیام را خوانده‌اند
+    reply_to = RecursiveField(read_only=True)
 
     class Meta:
         model = Message
-        fields = ('id', 'chat', 'sender', 'content', 'timestamp', 'is_read', 'read_by', 'is_edited', 'is_deleted')
+        fields = ('id', 'chat', 'sender', 'content', 'timestamp', 'is_read', 'read_by', 'is_edited', 'is_deleted', 'reply_to')
 
 # سریالایزر برای مدل Attachment
 class AttachmentSerializer(serializers.ModelSerializer):
     message = MessageSerializer()  # نمایش پیام مربوطه
+    url = serializers.HyperlinkedIdentityField(view_name='download_attachment', lookup_field='id', read_only=True)
 
     class Meta:
         model = Attachment
-        fields = ('id', 'message', 'file', 'file_name', 'file_type', 'file_size')
+        fields = ('id', 'message', 'file', 'file_name', 'file_type', 'file_size', 'url')
 
 # سریالایزر برای مدل Role
 class RoleSerializer(serializers.ModelSerializer):
@@ -74,14 +81,9 @@ class RoleSerializer(serializers.ModelSerializer):
 
 
 class GetChatsSerializer(serializers.ModelSerializer):
-    # شمارش پیام‌های خوانده نشده برای کاربر
-    unread_count = serializers.SerializerMethodField()
-
-    # اطلاعات کاربر دیگر در چت‌های مستقیم
+    unread_count = serializers.IntegerField()
+    last_message_content = serializers.CharField(source='last_message.content', read_only=True, default=None)
     other_user = serializers.SerializerMethodField()
-
-    # آخرین پیام هر چت
-    last_message = serializers.SerializerMethodField()
 
     # نام گروه یا نام کاربر در چت‌های مستقیم
     group_name = serializers.SerializerMethodField()
@@ -94,13 +96,7 @@ class GetChatsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Chat
-        fields = ['id', 'chat_type', 'group_name', 'group_image', 'unread_count', 'other_user', 'last_message', 'group_admin']
-
-    def get_unread_count(self, obj):
-        user = self.context['request'].user
-        # دریافت پیام‌های خوانده نشده برای کاربر
-        unread_messages = obj.messages.filter(is_read=False).exclude(read_by=user)
-        return unread_messages.count()
+        fields = ['id', 'chat_type', 'group_name', 'group_image', 'unread_count', 'other_user', 'last_message_content', 'group_admin']
 
     def get_other_user(self, obj):
         user = self.context['request'].user
@@ -113,21 +109,6 @@ class GetChatsSerializer(serializers.ModelSerializer):
                     'username': other_user.username,
                     'profile_picture': other_user.profile_picture.url if other_user.profile_picture else None
                 }
-        return None
-
-    def get_last_message(self, obj):
-        # دریافت آخرین پیام از لیست پیام‌ها
-        last_message = obj.messages.filter(is_deleted=False).order_by('-timestamp').first()
-        if last_message:
-            return {
-                'id': last_message.id,
-                'sender': {
-                    'id': last_message.sender.id,
-                    'username': last_message.sender.username
-                },
-                'content': last_message.content,
-                'timestamp': last_message.timestamp.isoformat()
-            }
         return None
 
     def get_group_name(self, obj):

@@ -3,35 +3,40 @@ from urllib.parse import parse_qs
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 from .models import Message, Attachment, Chat
-from rest_framework_simplejwt.tokens import AccessToken
 from django.contrib.auth import get_user_model
 from rest_framework.exceptions import AuthenticationFailed
+from encryption.utils import Encryptor, get_or_create_shared_key
+import base64
+from io import BytesIO
+from django.core.files.base import ContentFile
+from django.utils import timezone
+
+User = get_user_model()
 
 class ChatConsumer(AsyncWebsocketConsumer):
 
     async def connect(self):
         self.chat_id = self.scope['url_route']['kwargs']['chat_id']
         self.group_name = f"chat_{self.chat_id}"
+        self.user = self.scope['user']
 
-        token = self.get_token_from_query_string(self.scope)
-
-        if not token:
-            for header in self.scope.get('headers', []):
-                if header[0] == b'authorization':
-                    token = header[1].decode().split(' ')[1]
-                    break
-
-        if not token:
+        if self.user.is_anonymous:
             await self.close()
             return
 
         try:
-            user = await self.get_user_from_token(token)
+            chat = await database_sync_to_async(Chat.objects.get)(id=self.chat_id)
+            participants = await database_sync_to_async(list)(chat.participants.all())
+            other_user = None
+            for p in participants:
+                if p != self.user:
+                    other_user = p
+                    break
 
-            if user is None:
-                raise AuthenticationFailed("Invalid token")
-
-            self.scope['user'] = user
+            if other_user:
+                shared_key_str = await database_sync_to_async(get_or_create_shared_key)(self.user, other_user)
+                shared_key = base64.b64decode(shared_key_str)
+                self.encryptor = Encryptor(shared_key)
 
             await self.channel_layer.group_add(self.group_name, self.channel_name)
             await self.accept()
@@ -43,8 +48,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 sender_profile_picture = await self.get_sender_profile_picture(message)
                 sender_bio = await self.get_sender_bio(message)
 
+                decrypted_content = self.encryptor.decrypt(base64.b64decode(message.content))
+
                 await self.send(text_data=json.dumps({
-                    'message': message.content,
+                    'message': decrypted_content,
                     'sender': sender_name,
                     'sender_profile_picture': sender_profile_picture,
                     'sender_bio': sender_bio,
@@ -57,14 +64,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     'file': None,
                 }))
 
-        except AuthenticationFailed:
+        except Exception:
             await self.close()
 
-    def get_token_from_query_string(self, scope):
-        token = parse_qs(scope.get('query_string', b'').decode()).get('token', [None])[0]
-        return token
-
-    # بخش مربوط به دریافت داده‌ها از WebSocket و ارسال رویدادها به گروه
     async def receive(self, text_data):
         data = json.loads(text_data)
         action = data.get('action')
@@ -72,16 +74,26 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if action == 'send':
             message_content = data.get('message')
             file = data.get('file')
+            reply_to_id = data.get('reply_to')
             sender = self.scope['user']
 
-            message = await self.save_message(sender, message_content)
+            encrypted_content = self.encryptor.encrypt(message_content)
+            message = await self.save_message(sender, encrypted_content, reply_to_id)
 
             sender_name = sender.username
             sender_profile_picture = sender.profile_picture.url if sender.profile_picture else None
             sender_bio = sender.bio if sender.bio else ""
 
             if file:
-                attachment = await self.save_attachment(message, file)
+                file_content = base64.b64decode(file['content'])
+                input_file = BytesIO(file_content)
+                output_file = BytesIO()
+                self.encryptor.encrypt_file(input_file, output_file)
+                output_file.seek(0)
+
+                encrypted_file = ContentFile(output_file.read(), name=file['name'])
+
+                attachment = await self.save_attachment(message, encrypted_file, file['name'], file['type'], len(file_content))
                 file_data = {
                     'file_name': attachment.file_name,
                     'file_type': attachment.file_type,
@@ -90,12 +102,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
             else:
                 file_data = None
 
-            # ارسال پیام به گروه به روز شده
             await self.channel_layer.group_send(
                 self.group_name,
                 {
                     'type': 'chat_message',
-                    'message': message.content,
+                    'message': base64.b64encode(message.content).decode(),
                     'sender': sender_name,
                     'sender_profile_picture': sender_profile_picture,
                     'sender_bio': sender_bio,
@@ -106,6 +117,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     'action': 'send',
                     'message_id': message.id,
                     'file': file_data,
+                    'reply_to': reply_to_id,
                 }
             )
 
@@ -114,10 +126,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             new_content = data.get('new_message')
             sender = self.scope['user']
 
-            # ویرایش پیام
             message = await self.edit_message(message_id, new_content)
 
-            # ارسال پیام ویرایش شده به گروه
             await self.channel_layer.group_send(
                 self.group_name,
                 {
@@ -136,13 +146,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
             )
 
         elif action == 'delete':
-            message_id = data.get('message_id')
+            message_.id = data.get('message_id')
             sender = self.scope['user']
 
-            # حذف پیام
             await self.delete_message(message_id)
 
-            # ارسال پیام حذف شده به گروه
             await self.channel_layer.group_send(
                 self.group_name,
                 {
@@ -157,7 +165,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
             message_id = data.get('message_id')
             await self.mark_as_read(message_id)
 
-            # ارسال اطلاعات خوانده شده به گروه
             await self.channel_layer.group_send(
                 self.group_name,
                 {
@@ -170,11 +177,24 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 }
             )
 
-    # مدیریت دریافت پیام‌ها در گروه (نمایش پیام‌ها)
+        elif action == 'typing':
+            await self.channel_layer.group_send(
+                self.group_name,
+                {
+                    'type': 'typing',
+                    'user': self.scope['user'].username
+                }
+            )
+
     async def chat_message(self, event):
-        message = event.get('message')
-        if not message:
+        message_id = event.get('message_id')
+        delivered_at = await self.set_message_delivered(message_id)
+
+        message_content = event.get('message')
+        if not message_content:
             return
+
+        decrypted_content = self.encryptor.decrypt(base64.b64decode(message_content))
 
         sender_name = event.get('sender')
         sender_profile_picture = event.get('sender_profile_picture')
@@ -184,13 +204,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
         is_edited = event.get('is_edited')
         is_deleted = event.get('is_deleted')
         action = event.get('action')
-        message_id = event.get('message_id')
         file_data = event.get('file')
+        reply_to = event.get('reply_to')
 
-        # ارسال داده‌ها به WebSocket
         await self.send(text_data=json.dumps({
             'type': 'chat_message',
-            'message': message,
+            'message': decrypted_content,
+            'reply_to': reply_to,
+            'delivered_at': delivered_at.isoformat() if delivered_at else None,
             'sender': sender_name,
             'sender_profile_picture': sender_profile_picture,
             'sender_bio': sender_bio,
@@ -203,22 +224,45 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'file': file_data,
         }))
 
+    async def typing(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'typing',
+            'user': event['user']
+        }))
+
     @database_sync_to_async
-    def save_message(self, sender, content):
-        message = Message.objects.create(sender=sender, content=content, chat_id=self.chat_id)
+    def set_message_delivered(self, message_id):
+        try:
+            message = Message.objects.get(id=message_id)
+            if not message.delivered_at:
+                message.delivered_at = timezone.now()
+                message.save()
+            return message.delivered_at
+        except Message.DoesNotExist:
+            return None
+
+    @database_sync_to_async
+    def save_message(self, sender, content, reply_to_id=None):
+        reply_to = None
+        if reply_to_id:
+            try:
+                reply_to = Message.objects.get(id=reply_to_id)
+            except Message.DoesNotExist:
+                pass
+        message = Message.objects.create(sender=sender, content=content, chat_id=self.chat_id, reply_to=reply_to)
         message.is_read = True
         message.read_by.add(sender)
         message.save()
         return message
 
     @database_sync_to_async
-    def save_attachment(self, message, file):
+    def save_attachment(self, message, file, file_name, file_type, file_size):
         attachment = Attachment.objects.create(
             message=message,
             file=file,
-            file_name=file.name,
-            file_type=file.content_type,
-            file_size=file.size
+            file_name=file_name,
+            file_type=file_type,
+            file_size=file_size
         )
         return attachment
 
@@ -248,16 +292,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
         return list(Message.objects.filter(chat=self.chat_id).order_by('timestamp'))
 
     @database_sync_to_async
-    def get_user_from_token(self, token):
-        try:
-            access_token = AccessToken(token)
-            user_id = access_token['user_id']
-            user = get_user_model().objects.get(id=user_id)
-            return user
-        except (Exception, AuthenticationFailed):
-            return None
-
-    @database_sync_to_async
     def get_message_read_by(self, message_id):
         message = Message.objects.get(id=message_id)
         return message.read_by.all()
@@ -273,35 +307,3 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def get_sender_bio(self, message):
         return message.sender.bio if message.sender.bio else ""
-
-
-    async def chat_message(self, event):
-        message = event.get('message')
-        if not message:
-            return
-
-        sender_name = event.get('sender')
-        sender_profile_picture = event.get('sender_profile_picture')
-        sender_bio = event.get('sender_bio')
-        timestamp = event.get('timestamp')
-        read_by = event.get('read_by')
-        is_edited = event.get('is_edited')
-        is_deleted = event.get('is_deleted')
-        action = event.get('action')
-        message_id = event.get('message_id')
-        file_data = event.get('file')
-
-        await self.send(text_data=json.dumps({
-            'type': 'chat_message',
-            'message': message,
-            'sender': sender_name,
-            'sender_profile_picture': sender_profile_picture,
-            'sender_bio': sender_bio,
-            'timestamp': timestamp,
-            'read_by': read_by,
-            'is_edited': is_edited,
-            'is_deleted': is_deleted,
-            'action': action,
-            'message_id': message_id,
-            'file': file_data,
-        }))
