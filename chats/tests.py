@@ -290,3 +290,60 @@ class BlockingLogicTestCase(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn('error', response.data)
         self.assertEqual(response.data['error'], f"Cannot add {self.user3.username} due to a block in place with an existing member.")
+
+
+class ForwardMessageTestCase(TestCase):
+    def setUp(self):
+        self.user1 = User.objects.create_user(username='user1', password='password')
+        self.user2 = User.objects.create_user(username='user2', password='password')
+        self.user3 = User.objects.create_user(username='user3', password='password')
+        self.user4 = User.objects.create_user(username='user4', password='password')
+
+        # Chat 1: user1 and user2
+        self.chat1 = Chat.objects.create(chat_type='direct')
+        self.chat1.participants.add(self.user1, self.user2)
+        self.message_to_forward = Message.objects.create(chat=self.chat1, sender=self.user1, content=b'Forward this message')
+
+        # Chat 2: user1 and user3
+        self.chat2 = Chat.objects.create(chat_type='direct')
+        self.chat2.participants.add(self.user1, self.user3)
+
+        self.client = APIClient()
+
+    def test_forward_message(self):
+        self.client.force_authenticate(user=self.user1)
+        response = self.client.post(f'/api/chats/messages/{self.message_to_forward.id}/forward/', {'chat_ids': [self.chat2.id]}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(Message.objects.filter(chat=self.chat2, is_forwarded=True).exists())
+        forwarded_message = Message.objects.get(chat=self.chat2)
+        self.assertEqual(forwarded_message.content, self.message_to_forward.content)
+        self.assertEqual(forwarded_message.sender, self.user1)
+        self.assertEqual(forwarded_message.forwarded_from, self.user1)
+
+    def test_forward_permission_denied(self):
+        # user3 is not in the chat of the original message
+        self.client.force_authenticate(user=self.user3)
+        response = self.client.post(f'/api/chats/messages/{self.message_to_forward.id}/forward/', {'chat_ids': [self.chat2.id]}, format='json')
+        self.assertEqual(response.status_code, 403)
+
+    def test_forward_to_chat_not_member(self):
+        # Chat 3, where user1 is not a member
+        chat3 = Chat.objects.create(chat_type='direct')
+        chat3.participants.add(self.user3, self.user4)
+
+        self.client.force_authenticate(user=self.user1)
+        response = self.client.post(f'/api/chats/messages/{self.message_to_forward.id}/forward/', {'chat_ids': [chat3.id]}, format='json')
+
+        self.assertEqual(response.status_code, 400) # No messages were forwarded
+        self.assertFalse(Message.objects.filter(chat=chat3).exists())
+
+    def test_forward_blocked(self):
+        # user3 blocks user1
+        Block.objects.create(blocker=self.user3, blocked=self.user1)
+
+        self.client.force_authenticate(user=self.user1)
+        response = self.client.post(f'/api/chats/messages/{self.message_to_forward.id}/forward/', {'chat_ids': [self.chat2.id]}, format='json')
+
+        self.assertEqual(response.status_code, 400) # No messages were forwarded
+        self.assertFalse(Message.objects.filter(chat=self.chat2).exists())

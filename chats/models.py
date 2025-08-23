@@ -49,6 +49,8 @@ class Message(models.Model):
     delivered_at = models.DateTimeField(null=True, blank=True)
     is_edited = models.BooleanField(default=False)  # پیام ویرایش‌شده
     is_deleted = models.BooleanField(default=False)  # پیام حذف‌شده
+    is_forwarded = models.BooleanField(default=False)
+    forwarded_from = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='forwarded_messages')
 
     def edit_message(self, new_content):
         self.content = new_content

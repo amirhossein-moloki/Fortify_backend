@@ -3,12 +3,13 @@ from .views import (
     CreateChatView, UpdateChatView, DeleteChatView, AddUserToChatView,
     RemoveUserFromChatView, GetUserChatsView, SearchChatsView,
     get_chat_participants, LeaveChatView, download_attachment, ReactToMessageView,
-    PinMessageView
+    PinMessageView, ForwardMessageView
 )
 
 urlpatterns = [
     path('attachment/<int:attachment_id>/', download_attachment, name='download_attachment'),
     path('messages/<int:message_id>/react/', ReactToMessageView.as_view(), name='react_to_message'),
+    path('messages/<int:message_id>/forward/', ForwardMessageView.as_view(), name='forward_message'),
     path('chat/create/', CreateChatView.as_view(), name='create_chat'),
     path('chat/<int:chat_id>/update/', UpdateChatView.as_view(), name='update_chat'),
     path('chat/<int:chat_id>/delete/', DeleteChatView.as_view(), name='delete_chat'),

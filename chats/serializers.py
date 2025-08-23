@@ -14,10 +14,11 @@ class ReactionSerializer(serializers.ModelSerializer):
 class PinnedMessageSerializer(serializers.ModelSerializer):
     sender = UserSerializer(read_only=True)
     reactions = ReactionSerializer(many=True, read_only=True)
+    forwarded_from = UserSerializer(read_only=True)
 
     class Meta:
         model = Message
-        fields = ('id', 'sender', 'content', 'timestamp', 'is_edited', 'is_deleted', 'reactions')
+        fields = ('id', 'sender', 'content', 'timestamp', 'is_edited', 'is_deleted', 'reactions', 'is_forwarded', 'forwarded_from')
 
 
 # سریالایزر برای مدل Chat
@@ -75,10 +76,11 @@ class MessageSerializer(serializers.ModelSerializer):
     read_by = UserSerializer(many=True)  # نمایش کاربرانی که پیام را خوانده‌اند
     reply_to = RecursiveField(read_only=True)
     reactions = ReactionSerializer(many=True, read_only=True)
+    forwarded_from = UserSerializer(read_only=True)
 
     class Meta:
         model = Message
-        fields = ('id', 'chat', 'sender', 'content', 'timestamp', 'is_read', 'read_by', 'is_edited', 'is_deleted', 'reply_to', 'reactions')
+        fields = ('id', 'chat', 'sender', 'content', 'timestamp', 'is_read', 'read_by', 'is_edited', 'is_deleted', 'reply_to', 'reactions', 'is_forwarded', 'forwarded_from')
 
 # سریالایزر برای مدل Attachment
 class AttachmentSerializer(serializers.ModelSerializer):

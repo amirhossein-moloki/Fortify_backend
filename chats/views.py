@@ -1,4 +1,4 @@
-from .serializers import GetChatsSerializer, ReactionSerializer
+from .serializers import GetChatsSerializer, ReactionSerializer, MessageSerializer
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.decorators import api_view
 from .serializers import ChatSerializer
@@ -520,3 +520,77 @@ class PinMessageView(APIView):
         )
 
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ForwardMessageView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, message_id):
+        try:
+            original_message = Message.objects.get(id=message_id)
+        except Message.DoesNotExist:
+            return Response({"error": "Message not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if request.user not in original_message.chat.participants.all():
+            return Response({"error": "You do not have permission to forward this message."}, status=status.HTTP_403_FORBIDDEN)
+
+        chat_ids = request.data.get('chat_ids', [])
+        if not chat_ids:
+            return Response({"error": "No chat IDs provided."}, status=status.HTTP_400_BAD_REQUEST)
+
+        forwarded_messages = []
+        for chat_id in chat_ids:
+            try:
+                chat = Chat.objects.get(id=chat_id)
+            except Chat.DoesNotExist:
+                continue
+
+            if request.user not in chat.participants.all():
+                continue
+
+            # Check for blocking conflicts
+            is_blocked = False
+            for participant in chat.participants.all():
+                if Block.objects.filter(blocker=request.user, blocked=participant).exists() or \
+                   Block.objects.filter(blocker=participant, blocked=request.user).exists():
+                    is_blocked = True
+                    break
+            if is_blocked:
+                continue
+
+            new_message = Message.objects.create(
+                chat=chat,
+                sender=request.user,
+                content=original_message.content,
+                is_forwarded=True,
+                forwarded_from=original_message.sender
+            )
+            forwarded_messages.append(new_message)
+
+            # WebSocket event
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f"chat_{chat_id}",
+                {
+                    'type': 'chat_message',
+                    'message': base64.b64encode(new_message.content).decode(),
+                    'sender': new_message.sender.username,
+                    'sender_profile_picture': new_message.sender.profile_picture.url if new_message.sender.profile_picture else None,
+                    'sender_bio': new_message.sender.bio if new_message.sender.bio else "",
+                    'timestamp': new_message.timestamp.isoformat(),
+                    'read_by': [],
+                    'is_edited': new_message.is_edited,
+                    'is_deleted': new_message.is_deleted,
+                    'action': 'send',
+                    'message_id': new_message.id,
+                    'file': None, # Forwarding files is not supported in this version
+                    'reply_to': None, # Forwarding replies is not supported in this version
+                    'is_forwarded': new_message.is_forwarded,
+                    'forwarded_from': new_message.forwarded_from.username if new_message.forwarded_from else None,
+                }
+            )
+
+        if not forwarded_messages:
+            return Response({"error": "Message could not be forwarded to any of the provided chats."}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({"message": "Message forwarded successfully."}, status=status.HTTP_200_OK)
