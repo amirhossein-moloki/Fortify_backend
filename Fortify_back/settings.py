@@ -39,6 +39,7 @@ INSTALLED_APPS = [
     'contacts',
     'notifications',
     'encryption',
+    'calls',
 ]
 
 MIDDLEWARE = [
@@ -160,7 +161,8 @@ CORS_ALLOW_HEADERS = [
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3000')
 
 # Channels settings
-if 'test' in sys.argv:
+# Use in-memory channel layer for testing to avoid needing a Redis server
+if 'sqlite3' in DATABASES['default']['ENGINE']:
     CHANNEL_LAYERS = {
         'default': {
             'BACKEND': 'channels.layers.InMemoryChannelLayer',

@@ -4,6 +4,7 @@ from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 from .models import Message, Attachment, Chat, Poll, PollOption, PollVote, SearchableMessage
 from contacts.models import Block
+from calls.models import Call
 from django.contrib.auth import get_user_model
 from rest_framework.exceptions import AuthenticationFailed
 from encryption.utils import Encryptor, get_or_create_shared_key
@@ -229,6 +230,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     'message': serialized_message,
                 }
             )
+        elif action == 'initiate_call':
+            await self.initiate_call(data)
 
     async def chat_message(self, event):
         # This handler now needs to be able to handle both regular messages and full serialized message objects
@@ -405,3 +408,44 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def get_sender_bio(self, message):
         return message.sender.bio if message.sender.bio else ""
+
+    async def initiate_call(self, data):
+        chat_id = data.get('chat_id')
+        if not chat_id:
+            return
+
+        chat = await self.get_chat(chat_id)
+        if not chat or chat.chat_type != 'direct':
+            # For now, only support direct calls
+            return
+
+        participants = await database_sync_to_async(list)(chat.participants.all())
+        callee = next((p for p in participants if p != self.user), None)
+
+        if not callee:
+            return
+
+        caller = self.user
+        call = await self.create_call(caller, callee)
+
+        # Notify the callee via the CallConsumer's channel
+        await self.channel_layer.group_send(
+            f"user_{callee.id}",
+            {
+                'type': 'incoming_call',
+                'call_id': call.id,
+                'caller_id': caller.id,
+                'caller_username': caller.username,
+            }
+        )
+
+    @database_sync_to_async
+    def get_chat(self, chat_id):
+        try:
+            return Chat.objects.get(id=chat_id)
+        except Chat.DoesNotExist:
+            return None
+
+    @database_sync_to_async
+    def create_call(self, caller, callee):
+        return Call.objects.create(caller=caller, callee=callee, status='ringing')
