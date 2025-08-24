@@ -3,10 +3,12 @@ from .views import (
     CreateChatView, UpdateChatView, DeleteChatView, AddUserToChatView,
     RemoveUserFromChatView, GetUserChatsView, SearchChatsView,
     get_chat_participants, LeaveChatView, download_attachment, ReactToMessageView,
-    PinMessageView, ForwardMessageView, VoteOnPollView, SearchMessagesView
+    PinMessageView, ForwardMessageView, VoteOnPollView, SearchMessagesView,
+    MuteChatView, MutedChatListView
 )
 
 urlpatterns = [
+    path('muted/', MutedChatListView.as_view(), name='muted_chat_list'),
     path('attachment/<int:attachment_id>/', download_attachment, name='download_attachment'),
     path('polls/<int:poll_id>/options/<int:option_id>/vote/', VoteOnPollView.as_view(), name='poll_vote'),
     path('messages/<int:message_id>/react/', ReactToMessageView.as_view(), name='react_to_message'),
@@ -19,6 +21,7 @@ urlpatterns = [
     path('chat/<int:chat_id>/leave/', LeaveChatView.as_view(), name='leave_chat'),
     path('chat/<int:chat_id>/pin/<int:message_id>/', PinMessageView.as_view(), name='pin_message'),
     path('chat/<int:chat_id>/search/', SearchMessagesView.as_view(), name='search_messages'),
+    path('chat/<int:chat_id>/mute/', MuteChatView.as_view(), name='mute_chat'),
     path('', GetUserChatsView.as_view(), name='get_user_chats'),
     path('chats/search/', SearchChatsView.as_view(), name='search_chats'),
     path('chat/<int:chat_id>/participants/', get_chat_participants, name='get_chat_participants'),

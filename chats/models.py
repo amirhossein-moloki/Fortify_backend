@@ -154,3 +154,17 @@ class SearchableMessage(models.Model):
 
     def __str__(self):
         return f"Searchable content for Message {self.message.id} by {self.user.username}"
+
+
+class MutedChat(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='muted_chats')
+    chat = models.ForeignKey(Chat, on_delete=models.CASCADE, related_name='muted_by_users')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('user', 'chat')
+        verbose_name = "Muted Chat"
+        verbose_name_plural = "Muted Chats"
+
+    def __str__(self):
+        return f"User {self.user.username} muted chat {self.chat.id}"
