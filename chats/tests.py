@@ -482,12 +482,13 @@ class SearchMessagesViewTest(TestCase):
         self.assertEqual(response.data['results'][0]['id'], self.msg3.id) # Most recent first
         self.assertEqual(response.data['results'][1]['id'], self.msg1.id)
 
-    def test_search_finds_nothing(self):
+    def test_search_finds_message_from_other_user(self):
         self.client.force_authenticate(user=self.user1)
-        # user1 searches for "python", should find nothing because user2 sent it
+        # user1 searches for "python", should now find it even though user2 sent it
         response = self.client.get(f'/api/chats/chat/{self.chat.id}/search/?query=python')
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data['count'], 0)
+        self.assertEqual(response.data['count'], 1)
+        self.assertEqual(response.data['results'][0]['id'], self.msg2.id)
 
     def test_search_messages_no_query(self):
         self.client.force_authenticate(user=self.user1)

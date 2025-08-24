@@ -1,0 +1,16 @@
+-r base.txt
+
+# Testing
+pytest
+
+# Debugging & Profiling
+django-silk==5.3.2
+gprof2dot==2024.6.6
+
+# Code Style & Formatting
+autopep8==2.3.2
+pycodestyle==2.12.1
+
+# Build tools
+wheel==0.45.1
+setuptools==75.6.0

@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:13
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    environment:
+      - POSTGRES_DB=fortify_db
+      - POSTGRES_USER=fortify_user
+      - POSTGRES_PASSWORD=fortify_password
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:alpine
+
+  web:
+    build: .
+    command: >
+      sh -c "python manage.py migrate &&
+             gunicorn Fortify_back.wsgi:application --bind 0.0.0.0:8000"
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    environment:
+      - DJANGO_SECRET_KEY=your-super-secret-key-for-development
+      - DEBUG=True
+      - DATABASE_URL=postgres://fortify_user:fortify_password@db:5432/fortify_db
+      - REDIS_URL=redis://redis:6379/1
+      - EMAIL_HOST=your-email-host
+      - EMAIL_PORT=your-email-port
+      - EMAIL_HOST_USER=your-email-user
+      - EMAIL_HOST_PASSWORD=your-email-password
+    depends_on:
+      - db
+      - redis
+
+volumes:
+  postgres_data:
