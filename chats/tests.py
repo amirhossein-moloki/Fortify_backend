@@ -1,7 +1,7 @@
 from django.test import TestCase
 from channels.testing import WebsocketCommunicator
 from django.contrib.auth import get_user_model
-from .models import Chat, Message, Reaction, Poll, PollOption, PollVote
+from .models import Chat, Message, Reaction, Poll, PollOption, PollVote, SearchableMessage
 from contacts.models import Block
 from Fortify_back.asgi import application
 from encryption.utils import get_or_create_shared_key, Encryptor
@@ -95,6 +95,10 @@ class ChatTestCase(TestCase):
         encryptor = Encryptor(base64.b64decode(shared_key_str))
         decrypted_content = encryptor.decrypt(message.content)
         self.assertEqual(decrypted_content, message_text)
+
+        # Check that the searchable message was created
+        searchable_message_exists = await SearchableMessage.objects.filter(message=message, content=message_text).aexists()
+        self.assertTrue(searchable_message_exists)
 
         await communicator1.disconnect()
         await communicator2.disconnect()
@@ -424,3 +428,51 @@ class PollTestCase(TestCase):
         self.assertEqual(response.status_code, 201)
 
         self.assertTrue(PollVote.objects.filter(poll_option=option1, user=self.user2).exists())
+
+
+class SearchMessagesViewTest(TestCase):
+    def setUp(self):
+        self.user1 = User.objects.create_user(username='user1', password='password')
+        self.user2 = User.objects.create_user(username='user2', password='password')
+        self.user3 = User.objects.create_user(username='user3', password='password')
+        self.chat = Chat.objects.create(chat_type='direct')
+        self.chat.participants.add(self.user1, self.user2)
+        self.client = APIClient()
+
+        # Create some messages
+        self.msg1 = Message.objects.create(chat=self.chat, sender=self.user1, content=b'encrypted hello')
+        SearchableMessage.objects.create(message=self.msg1, user=self.user1, content='hello world')
+
+        self.msg2 = Message.objects.create(chat=self.chat, sender=self.user2, content=b'encrypted python')
+        # Note: user2 sends this, so user1 cannot search it
+        SearchableMessage.objects.create(message=self.msg2, user=self.user2, content='python is fun')
+
+        self.msg3 = Message.objects.create(chat=self.chat, sender=self.user1, content=b'encrypted again')
+        SearchableMessage.objects.create(message=self.msg3, user=self.user1, content='hello again')
+
+
+    def test_search_messages_success(self):
+        self.client.force_authenticate(user=self.user1)
+        # user1 searches for "hello", should find msg1 and msg3
+        response = self.client.get(f'/api/chats/chat/{self.chat.id}/search/?query=hello')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['count'], 2)
+        self.assertEqual(response.data['results'][0]['id'], self.msg3.id) # Most recent first
+        self.assertEqual(response.data['results'][1]['id'], self.msg1.id)
+
+    def test_search_finds_nothing(self):
+        self.client.force_authenticate(user=self.user1)
+        # user1 searches for "python", should find nothing because user2 sent it
+        response = self.client.get(f'/api/chats/chat/{self.chat.id}/search/?query=python')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['count'], 0)
+
+    def test_search_messages_no_query(self):
+        self.client.force_authenticate(user=self.user1)
+        response = self.client.get(f'/api/chats/chat/{self.chat.id}/search/')
+        self.assertEqual(response.status_code, 400)
+
+    def test_search_messages_not_in_chat(self):
+        self.client.force_authenticate(user=self.user3)
+        response = self.client.get(f'/api/chats/chat/{self.chat.id}/search/?query=test')
+        self.assertEqual(response.status_code, 403)

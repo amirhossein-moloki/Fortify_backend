@@ -140,3 +140,17 @@ class PollVote(models.Model):
 
     class Meta:
         unique_together = ('poll_option', 'user')
+
+
+class SearchableMessage(models.Model):
+    """
+    Stores a non-encrypted version of message content for searching purposes.
+    This introduces a security trade-off, as message content will be
+    accessible on the server.
+    """
+    message = models.OneToOneField(Message, on_delete=models.CASCADE, related_name='searchable_version')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='searchable_messages')
+    content = models.TextField()
+
+    def __str__(self):
+        return f"Searchable content for Message {self.message.id} by {self.user.username}"

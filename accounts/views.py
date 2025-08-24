@@ -202,41 +202,6 @@ class PasswordResetConfirmAPIView(APIView):
         return Response({"message": "Password has been reset successfully."}, status=status.HTTP_200_OK)
 
 
-# ویو برای آپدیت پروفایل کاربری با JWT
-class UpdateProfileAPIView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def patch(self, request):
-        user = request.user
-        data = request.data
-
-        # آپدیت اطلاعات کاربری
-        user_serializer = UserSerializer(user, data=data.get('user', {}), partial=True)
-
-        if user_serializer.is_valid():
-            user_serializer.save()
-        else:
-            return Response({"user_errors": user_serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
-
-        # بررسی وجود پروفایل و ایجاد در صورت نبود
-        profile, created = Profile.objects.get_or_create(user=user)
-
-        # آپدیت پروفایل
-        profile_serializer = ProfileSerializer(profile, data=data.get('profile', {}), partial=True)
-
-        if profile_serializer.is_valid():
-            profile_serializer.save()
-            return Response({
-                "message": "Profile updated successfully!" + (" Profile was created." if created else ""),
-                "user": user_serializer.data,
-                "profile": profile_serializer.data
-            }, status=status.HTTP_200_OK)
-        else:
-            return Response({"profile_errors": profile_serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
-
-
-
-
 # ویو برای خروج کاربر
 class LogoutAPIView(APIView):
     permission_classes = [IsAuthenticated]
@@ -305,32 +270,80 @@ class OTPVerifyAPIView(APIView):
 
 
 class UserProfileView(APIView):
-    permission_classes = [IsAuthenticated]  # نیاز به احراز هویت
+    permission_classes = [IsAuthenticated]
+
+    def get_object(self, username):
+        try:
+            return User.objects.get(username=username)
+        except User.DoesNotExist:
+            raise Http404
 
     def get(self, request, username, *args, **kwargs):
-        try:
-            # دریافت کاربر بر اساس نام کاربری
-            user = User.objects.get(username=username)
+        user = self.get_object(username)
+        profile, _ = Profile.objects.get_or_create(user=user)
 
-            # دریافت پروفایل کاربر (در صورتی که پروفایل وجود داشته باشد)
-            profile = Profile.objects.filter(user=user).first()
+        is_owner = request.user == user
 
-            # بررسی مالکیت پروفایل
-            is_owner = request.user == user
+        # Combine user and profile data
+        response_data = {
+            'is_owner': is_owner,
+            'username': user.username,
+            'email': user.email,
+            'profile_picture': user.profile_picture.url if user.profile_picture else None,
+            'bio': user.bio,
+            'is_online': user.is_online,
+            'last_seen': user.last_seen,
+            'date_of_birth': profile.date_of_birth,
+            'gender': profile.gender,
+            'location': profile.location,
+            'website': profile.website,
+            'status_message': profile.status_message,
+            'banner_image': profile.banner_image.url if profile.banner_image else None,
+            'social_links': profile.social_links,
+        }
+        return Response(response_data, status=status.HTTP_200_OK)
 
-            # سریالایز کردن داده‌ها
-            user_serializer = UserSerializer(user)
-            profile_serializer = ProfileSerializer(profile) if profile else None
-            user_serializer=UserSerializer(user) if is_owner else None
+    def patch(self, request, username, *args, **kwargs):
+        user = self.get_object(username)
+        if request.user != user:
+            return Response({'detail': 'You do not have permission to perform this action.'}, status=status.HTTP_403_FORBIDDEN)
 
-            # بازگرداندن داده‌های سریالایز شده به همراه وضعیت مالکیت
-            return Response({
-                'is_owner': is_owner,
-                'profile': profile_serializer.data if profile_serializer else None,
-            }, status=status.HTTP_200_OK)
+        profile, _ = Profile.objects.get_or_create(user=user)
 
-        except User.DoesNotExist:
-            return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+        # Separate data for User and Profile models
+        user_data = {}
+        if 'bio' in request.data:
+            user_data['bio'] = request.data['bio']
+        if 'profile_picture' in request.data:
+            user_data['profile_picture'] = request.data['profile_picture']
+
+        profile_data = {}
+        profile_fields = ['date_of_birth', 'gender', 'location', 'website', 'status_message', 'social_links']
+        for field in profile_fields:
+            if field in request.data:
+                profile_data[field] = request.data[field]
+
+        if 'banner_image' in request.data:
+            profile_data['banner_image'] = request.data['banner_image']
+
+        user_serializer = UserSerializer(user, data=user_data, partial=True)
+        profile_serializer = ProfileSerializer(profile, data=profile_data, partial=True)
+
+        user_valid = user_serializer.is_valid()
+        profile_valid = profile_serializer.is_valid()
+
+        if user_valid and profile_valid:
+            user_serializer.save()
+            profile_serializer.save()
+            return Response(self.get(request, username).data) # Return the updated profile
+
+        errors = {}
+        if not user_valid:
+            errors.update(user_serializer.errors)
+        if not profile_valid:
+            errors.update(profile_serializer.errors)
+
+        return Response(errors, status=status.HTTP_400_BAD_REQUEST)
 
 class SearchUserView(APIView):
     permission_classes = [IsAuthenticated]

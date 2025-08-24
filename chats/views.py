@@ -7,7 +7,7 @@ from accounts.models import User
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from .models import Chat, Role, Message, Reaction, Poll, PollOption, PollVote
+from .models import Chat, Role, Message, Reaction, Poll, PollOption, PollVote, SearchableMessage
 from contacts.models import Block
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
@@ -20,6 +20,7 @@ import base64
 from io import BytesIO
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
+from rest_framework.pagination import PageNumberPagination
 
 class CreateChatView(APIView):
     permission_classes = [IsAuthenticated]
@@ -626,3 +627,42 @@ class VoteOnPollView(APIView):
         )
 
         return Response({"message": "Vote cast successfully."}, status=status.HTTP_201_CREATED)
+
+
+class SearchMessagesView(APIView):
+    permission_classes = [IsAuthenticated]
+    pagination_class = PageNumberPagination
+
+    def get(self, request, chat_id):
+        query = request.query_params.get('query', None)
+        if not query:
+            return Response({"error": "A search query is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            chat = Chat.objects.get(id=chat_id)
+        except Chat.DoesNotExist:
+            return Response({"error": "Chat not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if request.user not in chat.participants.all():
+            return Response({"error": "You are not a member of this chat."}, status=status.HTTP_403_FORBIDDEN)
+
+        # Search in the SearchableMessage model
+        searchable_messages = SearchableMessage.objects.filter(
+            message__chat=chat,
+            user=request.user, # Users can only search their own indexed messages
+            content__icontains=query
+        ).select_related('message__sender').order_by('-message__timestamp')
+
+        # Get the original Message objects
+        message_ids = [sm.message.id for sm in searchable_messages]
+        messages = Message.objects.filter(id__in=message_ids, is_deleted=False).order_by('-timestamp')
+
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(messages, request, view=self)
+        if page is not None:
+            serializer = MessageSerializer(page, many=True, context={'request': request})
+            return paginator.get_paginated_response(serializer.data)
+
+        # This case happens when the requested page is out of bounds (e.g., empty)
+        # The paginator returns None, so we should return an empty paginated response.
+        return paginator.get_paginated_response([])

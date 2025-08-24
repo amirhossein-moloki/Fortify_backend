@@ -26,8 +26,8 @@ application = ProtocolTypeRouter({
             # مسیر WebSocket برای چت
             re_path(r'^ws/chat/(?P<chat_id>\d+)/$', chat_consumers.ChatConsumer.as_asgi(), name="chat_websocket"),
 
-            # مسیر WebSocket برای وضعیت کاربران (با استفاده از username)
-            re_path(r'^ws/status/(?P<username>\w+)/$', status_consumers.AccountStatusConsumer.as_asgi(), name="status_websocket"),
+            # مسیر WebSocket برای وضعیت حضور کاربران
+            re_path(r'ws/presence/$', status_consumers.PresenceConsumer.as_asgi()),
 
             # مسیر WebSocket برای نوتیفیکیشن‌ها
             re_path(r'ws/notifications/$', notification_consumers.NotificationConsumer.as_asgi()),

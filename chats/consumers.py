@@ -2,7 +2,7 @@ import json
 from urllib.parse import parse_qs
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
-from .models import Message, Attachment, Chat, Poll, PollOption, PollVote
+from .models import Message, Attachment, Chat, Poll, PollOption, PollVote, SearchableMessage
 from contacts.models import Block
 from django.contrib.auth import get_user_model
 from rest_framework.exceptions import AuthenticationFailed
@@ -87,11 +87,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         return
 
             message_content = data.get('message')
+            searchable_text = data.get('searchable_text', message_content) # Fallback for older clients
             file = data.get('file')
             reply_to_id = data.get('reply_to')
 
             encrypted_content = self.encryptor.encrypt(message_content)
-            message = await self.save_message(sender, encrypted_content, reply_to_id)
+            message = await self.save_message(sender, encrypted_content, searchable_text, reply_to_id)
 
             sender_name = sender.username
             sender_profile_picture = sender.profile_picture.url if sender.profile_picture else None
@@ -211,7 +212,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 return
 
             poll = await self.create_poll(question, options)
-            message = await self.save_message(self.scope['user'], b'', poll=poll)
+            message = await self.save_message(self.scope['user'], b'', searchable_text=None, poll=poll)
 
             from .serializers import WebsocketMessageSerializer
 
@@ -328,17 +329,27 @@ class ChatConsumer(AsyncWebsocketConsumer):
             return None
 
     @database_sync_to_async
-    def save_message(self, sender, content, reply_to_id=None, poll=None):
+    def save_message(self, sender, content, searchable_text, reply_to_id=None, poll=None):
         reply_to = None
         if reply_to_id:
             try:
                 reply_to = Message.objects.get(id=reply_to_id)
             except Message.DoesNotExist:
                 pass
+
         message = Message.objects.create(sender=sender, content=content, chat_id=self.chat_id, reply_to=reply_to, poll=poll)
         message.is_read = True
         message.read_by.add(sender)
         message.save()
+
+        # Create the searchable version
+        if searchable_text and not poll: # Don't save searchable content for polls
+            SearchableMessage.objects.create(
+                message=message,
+                user=sender,
+                content=searchable_text
+            )
+
         return message
 
     @database_sync_to_async
