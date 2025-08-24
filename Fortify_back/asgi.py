@@ -11,6 +11,7 @@ from accounts.middlewares import TokenAuthMiddleware
 from accounts import consumers as status_consumers
 from notifications import consumers as notification_consumers
 from encryption import routing as encryption_routing
+from calls import routing as call_routing
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'Fortify_back.settings')
 django.setup()
@@ -31,6 +32,6 @@ application = ProtocolTypeRouter({
 
             # مسیر WebSocket برای نوتیفیکیشن‌ها
             re_path(r'ws/notifications/$', notification_consumers.NotificationConsumer.as_asgi()),
-        ] + encryption_routing.websocket_urlpatterns)
+        ] + encryption_routing.websocket_urlpatterns + call_routing.websocket_urlpatterns)
     ),
 })

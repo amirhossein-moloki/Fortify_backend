@@ -1,8 +1,9 @@
 from django.test import TestCase
 from channels.testing import WebsocketCommunicator
 from django.contrib.auth import get_user_model
-from .models import Chat, Message, Reaction, Poll, PollOption, PollVote, SearchableMessage
+from .models import Chat, Message, Reaction, Poll, PollOption, PollVote, SearchableMessage, MutedChat
 from contacts.models import Block
+from notifications.models import Notification, NotificationSettings
 from Fortify_back.asgi import application
 from encryption.utils import get_or_create_shared_key, Encryptor
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -19,6 +20,9 @@ class ReactionTestCase(TestCase):
         self.user1 = User.objects.create_user(username='user1', password='password')
         self.user2 = User.objects.create_user(username='user2', password='password')
         self.user3 = User.objects.create_user(username='user3', password='password')
+        NotificationSettings.objects.create(user=self.user1)
+        NotificationSettings.objects.create(user=self.user2)
+        NotificationSettings.objects.create(user=self.user3)
         self.chat = Chat.objects.create(chat_type='direct')
         self.chat.participants.add(self.user1, self.user2)
         self.message = Message.objects.create(chat=self.chat, sender=self.user1, content=b'Test Message')
@@ -59,6 +63,8 @@ class ChatTestCase(TestCase):
     def setUp(self):
         self.user1 = User.objects.create_user(username='user1', password='password')
         self.user2 = User.objects.create_user(username='user2', password='password')
+        NotificationSettings.objects.create(user=self.user1)
+        NotificationSettings.objects.create(user=self.user2)
         self.chat = Chat.objects.create()
         self.chat.participants.add(self.user1, self.user2)
 
@@ -107,6 +113,8 @@ class ChatFeaturesTestCase(TestCase):
     def setUp(self):
         self.user1 = User.objects.create_user(username='user1', password='password')
         self.user2 = User.objects.create_user(username='user2', password='password')
+        NotificationSettings.objects.create(user=self.user1)
+        NotificationSettings.objects.create(user=self.user2)
         self.chat = Chat.objects.create()
         self.chat.participants.add(self.user1, self.user2)
 
@@ -239,6 +247,8 @@ class PinMessageTestCase(TestCase):
     def setUp(self):
         self.user1 = User.objects.create_user(username='admin_user', password='password')
         self.user2 = User.objects.create_user(username='normal_user', password='password')
+        NotificationSettings.objects.create(user=self.user1)
+        NotificationSettings.objects.create(user=self.user2)
         self.chat = Chat.objects.create(chat_type='group', group_name='Test Group')
         self.chat.participants.add(self.user1, self.user2)
         self.chat.group_admin.add(self.user1)
@@ -275,6 +285,9 @@ class BlockingLogicTestCase(TestCase):
         self.user1 = User.objects.create_user(username='user1', password='password')
         self.user2 = User.objects.create_user(username='user2', password='password')
         self.user3 = User.objects.create_user(username='user3', password='password')
+        NotificationSettings.objects.create(user=self.user1)
+        NotificationSettings.objects.create(user=self.user2)
+        NotificationSettings.objects.create(user=self.user3)
         self.client = APIClient()
 
     async def test_send_message_when_blocked(self):
@@ -333,6 +346,10 @@ class ForwardMessageTestCase(TestCase):
         self.user2 = User.objects.create_user(username='user2', password='password')
         self.user3 = User.objects.create_user(username='user3', password='password')
         self.user4 = User.objects.create_user(username='user4', password='password')
+        NotificationSettings.objects.create(user=self.user1)
+        NotificationSettings.objects.create(user=self.user2)
+        NotificationSettings.objects.create(user=self.user3)
+        NotificationSettings.objects.create(user=self.user4)
 
         # Chat 1: user1 and user2
         self.chat1 = Chat.objects.create(chat_type='direct')
@@ -388,6 +405,8 @@ class PollTestCase(TestCase):
     def setUp(self):
         self.user1 = User.objects.create_user(username='user1', password='password')
         self.user2 = User.objects.create_user(username='user2', password='password')
+        NotificationSettings.objects.create(user=self.user1)
+        NotificationSettings.objects.create(user=self.user2)
         self.chat = Chat.objects.create(chat_type='group', group_name='Test Group')
         self.chat.participants.add(self.user1, self.user2)
         self.client = APIClient()
@@ -435,6 +454,9 @@ class SearchMessagesViewTest(TestCase):
         self.user1 = User.objects.create_user(username='user1', password='password')
         self.user2 = User.objects.create_user(username='user2', password='password')
         self.user3 = User.objects.create_user(username='user3', password='password')
+        NotificationSettings.objects.create(user=self.user1)
+        NotificationSettings.objects.create(user=self.user2)
+        NotificationSettings.objects.create(user=self.user3)
         self.chat = Chat.objects.create(chat_type='direct')
         self.chat.participants.add(self.user1, self.user2)
         self.client = APIClient()
@@ -476,3 +498,50 @@ class SearchMessagesViewTest(TestCase):
         self.client.force_authenticate(user=self.user3)
         response = self.client.get(f'/api/chats/chat/{self.chat.id}/search/?query=test')
         self.assertEqual(response.status_code, 403)
+
+
+class MuteChatTestCase(TestCase):
+    def setUp(self):
+        self.user1 = User.objects.create_user(username='user1', password='password')
+        self.user2 = User.objects.create_user(username='user2', password='password')
+        NotificationSettings.objects.create(user=self.user1)
+        NotificationSettings.objects.create(user=self.user2)
+        self.chat = Chat.objects.create(chat_type='direct')
+        self.chat.participants.add(self.user1, self.user2)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user1)
+
+    def test_mute_chat(self):
+        response = self.client.post(f'/api/chats/chat/{self.chat.id}/mute/')
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(MutedChat.objects.filter(user=self.user1, chat=self.chat).exists())
+
+    def test_unmute_chat(self):
+        MutedChat.objects.create(user=self.user1, chat=self.chat)
+        response = self.client.delete(f'/api/chats/chat/{self.chat.id}/mute/')
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(MutedChat.objects.filter(user=self.user1, chat=self.chat).exists())
+
+    def test_get_muted_chats(self):
+        MutedChat.objects.create(user=self.user1, chat=self.chat)
+        response = self.client.get('/api/chats/muted/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]['id'], self.chat.id)
+
+    def test_notification_not_sent_for_muted_chat(self):
+        # Mute the chat for user2
+        MutedChat.objects.create(user=self.user2, chat=self.chat)
+
+        # user1 sends a message
+        Message.objects.create(chat=self.chat, sender=self.user1, content=b'You should not be notified')
+
+        # Check that no notification was created for user2
+        self.assertFalse(Notification.objects.filter(recipient=self.user2, notification_type='message').exists())
+
+    def test_notification_sent_for_unmuted_chat(self):
+        # user1 sends a message
+        Message.objects.create(chat=self.chat, sender=self.user1, content=b'You should be notified')
+
+        # Check that a notification was created for user2
+        self.assertTrue(Notification.objects.filter(recipient=self.user2, notification_type='message').exists())

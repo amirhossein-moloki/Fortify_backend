@@ -7,7 +7,7 @@ from accounts.models import User
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from .models import Chat, Role, Message, Reaction, Poll, PollOption, PollVote, SearchableMessage
+from .models import Chat, Role, Message, Reaction, Poll, PollOption, PollVote, SearchableMessage, MutedChat
 from contacts.models import Block
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
@@ -663,6 +663,52 @@ class SearchMessagesView(APIView):
             serializer = MessageSerializer(page, many=True, context={'request': request})
             return paginator.get_paginated_response(serializer.data)
 
-        # This case happens when the requested page is out of bounds (e.g., empty)
-        # The paginator returns None, so we should return an empty paginated response.
-        return paginator.get_paginated_response([])
+        if page is not None:
+            serializer = MessageSerializer(page, many=True, context={'request': request})
+            return paginator.get_paginated_response(serializer.data)
+
+        return Response({
+            'count': 0,
+            'next': None,
+            'previous': None,
+            'results': []
+        })
+
+
+class MuteChatView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, chat_id):
+        chat = get_object_or_404(Chat, id=chat_id)
+        if request.user not in chat.participants.all():
+            return Response({"error": "You are not a participant in this chat."}, status=status.HTTP_403_FORBIDDEN)
+
+        muted_chat, created = MutedChat.objects.get_or_create(user=request.user, chat=chat)
+
+        if created:
+            return Response({"message": "Chat muted successfully."}, status=status.HTTP_201_CREATED)
+        else:
+            return Response({"message": "Chat is already muted."}, status=status.HTTP_200_OK)
+
+    def delete(self, request, chat_id):
+        chat = get_object_or_404(Chat, id=chat_id)
+        if request.user not in chat.participants.all():
+            return Response({"error": "You are not a participant in this chat."}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            muted_chat = MutedChat.objects.get(user=request.user, chat=chat)
+            muted_chat.delete()
+            return Response({"message": "Chat unmuted successfully."}, status=status.HTTP_204_NO_CONTENT)
+        except MutedChat.DoesNotExist:
+            return Response({"error": "Chat is not muted."}, status=status.HTTP_404_NOT_FOUND)
+
+
+class MutedChatListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        muted_chats = MutedChat.objects.filter(user=request.user).select_related('chat')
+        chat_ids = [mc.chat.id for mc in muted_chats]
+        chats = Chat.objects.filter(id__in=chat_ids)
+        serializer = ChatSerializer(chats, many=True, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
