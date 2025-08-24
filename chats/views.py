@@ -1,4 +1,4 @@
-from .serializers import GetChatsSerializer
+from .serializers import GetChatsSerializer, ReactionSerializer, MessageSerializer, PollSerializer
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.decorators import api_view
 from .serializers import ChatSerializer
@@ -7,8 +7,10 @@ from accounts.models import User
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from .models import Chat, Role
+from .models import Chat, Role, Message, Reaction, Poll, PollOption, PollVote, SearchableMessage
+from contacts.models import Block
 from rest_framework.permissions import IsAuthenticated
+from django.shortcuts import get_object_or_404
 from rest_framework.exceptions import PermissionDenied
 from django.http import HttpResponse
 from .models import Attachment
@@ -16,6 +18,10 @@ from encryption.utils import Encryptor, get_or_create_shared_key
 from django.db.models import Count, Q, OuterRef, Subquery
 import base64
 from io import BytesIO
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
+from rest_framework.pagination import PageNumberPagination
+
 class CreateChatView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -197,7 +203,14 @@ class AddUserToChatView(APIView):
             # بررسی اینکه آیا کاربر قبلاً عضو چت است یا نه
             if new_user in chat.participants.all():
                 already_in_chat.append(username)
-                continue  # کاربر از قبل عضو است
+                continue
+
+            # Check for blocking conflicts
+            existing_participants = chat.participants.all()
+            for participant in existing_participants:
+                if Block.objects.filter(blocker=new_user, blocked=participant).exists() or \
+                   Block.objects.filter(blocker=participant, blocked=new_user).exists():
+                    return Response({"error": f"Cannot add {username} due to a block in place with an existing member."}, status=status.HTTP_400_BAD_REQUEST)
 
             chat.participants.add(new_user)
             new_users.append(new_user)
@@ -377,3 +390,279 @@ def download_attachment(request, attachment_id):
     response = HttpResponse(output_file.getvalue(), content_type=attachment.file_type)
     response['Content-Disposition'] = f'attachment; filename="{attachment.file_name}"'
     return response
+
+
+class ReactToMessageView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, message_id):
+        emoji = request.data.get('emoji')
+        if not emoji:
+            return Response({"error": "Emoji is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            message = Message.objects.get(id=message_id)
+        except Message.DoesNotExist:
+            return Response({"error": "Message not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if request.user not in message.chat.participants.all():
+            return Response({"error": "You are not a participant in this chat."}, status=status.HTTP_403_FORBIDDEN)
+
+        reaction, created = Reaction.objects.get_or_create(
+            message=message,
+            user=request.user,
+            defaults={'emoji': emoji}
+        )
+        reaction.emoji = emoji
+        reaction.save()
+
+
+        serializer = ReactionSerializer(reaction)
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f"chat_{message.chat.id}",
+            {
+                "type": "reaction_add",
+                "reaction": serializer.data,
+            },
+        )
+
+        if created:
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def delete(self, request, message_id):
+        emoji = request.data.get('emoji')
+        if not emoji:
+            return Response({"error": "Emoji is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            reaction = Reaction.objects.get(
+                message_id=message_id,
+                user=request.user,
+                emoji=emoji
+            )
+            reaction_id = reaction.id
+            message_chat_id = reaction.message.chat.id
+            reaction.delete()
+
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f"chat_{message_chat_id}",
+                {
+                    "type": "reaction_remove",
+                    "reaction_id": reaction_id,
+                    "message_id": message_id,
+                },
+            )
+
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except Reaction.DoesNotExist:
+            return Response({"error": "Reaction not found."}, status=status.HTTP_404_NOT_FOUND)
+
+
+class PinMessageView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, chat_id, message_id):
+        try:
+            chat = Chat.objects.get(id=chat_id)
+            message = Message.objects.get(id=message_id)
+        except Chat.DoesNotExist:
+            return Response({"error": "Chat not found."}, status=status.HTTP_404_NOT_FOUND)
+        except Message.DoesNotExist:
+            return Response({"error": "Message not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if request.user not in chat.group_admin.all():
+            return Response({"error": "You do not have permission to pin messages in this chat."}, status=status.HTTP_403_FORBIDDEN)
+
+        if message.chat != chat:
+            return Response({"error": "Message is not in this chat."}, status=status.HTTP_400_BAD_REQUEST)
+
+        chat.pinned_message = message
+        chat.save()
+
+        serializer = ChatSerializer(chat, context={'request': request})
+
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f"chat_{chat_id}",
+            {
+                "type": "pin_message_update",
+                "chat": serializer.data,
+            },
+        )
+
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def delete(self, request, chat_id, message_id):
+        try:
+            chat = Chat.objects.get(id=chat_id)
+        except Chat.DoesNotExist:
+            return Response({"error": "Chat not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if request.user not in chat.group_admin.all():
+            return Response({"error": "You do not have permission to unpin messages in this chat."}, status=status.HTTP_403_FORBIDDEN)
+
+        if chat.pinned_message is None or chat.pinned_message.id != message_id:
+            return Response({"error": "This message is not pinned."}, status=status.HTTP_400_BAD_REQUEST)
+
+        chat.pinned_message = None
+        chat.save()
+
+        serializer = ChatSerializer(chat, context={'request': request})
+
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f"chat_{chat_id}",
+            {
+                "type": "pin_message_update",
+                "chat": serializer.data,
+            },
+        )
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ForwardMessageView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, message_id):
+        try:
+            original_message = Message.objects.get(id=message_id)
+        except Message.DoesNotExist:
+            return Response({"error": "Message not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if request.user not in original_message.chat.participants.all():
+            return Response({"error": "You do not have permission to forward this message."}, status=status.HTTP_403_FORBIDDEN)
+
+        chat_ids = request.data.get('chat_ids', [])
+        if not chat_ids:
+            return Response({"error": "No chat IDs provided."}, status=status.HTTP_400_BAD_REQUEST)
+
+        forwarded_messages = []
+        for chat_id in chat_ids:
+            try:
+                chat = Chat.objects.get(id=chat_id)
+            except Chat.DoesNotExist:
+                continue
+
+            if request.user not in chat.participants.all():
+                continue
+
+            # Check for blocking conflicts
+            is_blocked = False
+            for participant in chat.participants.all():
+                if Block.objects.filter(blocker=request.user, blocked=participant).exists() or \
+                   Block.objects.filter(blocker=participant, blocked=request.user).exists():
+                    is_blocked = True
+                    break
+            if is_blocked:
+                continue
+
+            new_message = Message.objects.create(
+                chat=chat,
+                sender=request.user,
+                content=original_message.content,
+                is_forwarded=True,
+                forwarded_from=original_message.sender
+            )
+            forwarded_messages.append(new_message)
+
+            # WebSocket event
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f"chat_{chat_id}",
+                {
+                    'type': 'chat_message',
+                    'message': base64.b64encode(new_message.content).decode(),
+                    'sender': new_message.sender.username,
+                    'sender_profile_picture': new_message.sender.profile_picture.url if new_message.sender.profile_picture else None,
+                    'sender_bio': new_message.sender.bio if new_message.sender.bio else "",
+                    'timestamp': new_message.timestamp.isoformat(),
+                    'read_by': [],
+                    'is_edited': new_message.is_edited,
+                    'is_deleted': new_message.is_deleted,
+                    'action': 'send',
+                    'message_id': new_message.id,
+                    'file': None, # Forwarding files is not supported in this version
+                    'reply_to': None, # Forwarding replies is not supported in this version
+                    'is_forwarded': new_message.is_forwarded,
+                    'forwarded_from': new_message.forwarded_from.username if new_message.forwarded_from else None,
+                }
+            )
+
+        if not forwarded_messages:
+            return Response({"error": "Message could not be forwarded to any of the provided chats."}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({"message": "Message forwarded successfully."}, status=status.HTTP_200_OK)
+
+
+class VoteOnPollView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, poll_id, option_id):
+        poll_option = get_object_or_404(PollOption, id=option_id, poll_id=poll_id)
+        poll = poll_option.poll
+        message = get_object_or_404(Message, poll=poll)
+
+        if request.user not in message.chat.participants.all():
+            return Response({"error": "You are not a participant in this chat."}, status=status.HTTP_403_FORBIDDEN)
+
+        # Check if the user has already voted on this poll
+        if PollVote.objects.filter(poll_option__poll=poll, user=request.user).exists():
+            return Response({"error": "You have already voted on this poll."}, status=status.HTTP_400_BAD_REQUEST)
+
+        vote = PollVote.objects.create(poll_option=poll_option, user=request.user)
+
+        # WebSocket event for real-time update
+        channel_layer = get_channel_layer()
+        serializer = PollSerializer(poll)
+        async_to_sync(channel_layer.group_send)(
+            f"chat_{message.chat.id}",
+            {
+                "type": "poll_vote_update",
+                "poll": serializer.data,
+            },
+        )
+
+        return Response({"message": "Vote cast successfully."}, status=status.HTTP_201_CREATED)
+
+
+class SearchMessagesView(APIView):
+    permission_classes = [IsAuthenticated]
+    pagination_class = PageNumberPagination
+
+    def get(self, request, chat_id):
+        query = request.query_params.get('query', None)
+        if not query:
+            return Response({"error": "A search query is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            chat = Chat.objects.get(id=chat_id)
+        except Chat.DoesNotExist:
+            return Response({"error": "Chat not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if request.user not in chat.participants.all():
+            return Response({"error": "You are not a member of this chat."}, status=status.HTTP_403_FORBIDDEN)
+
+        # Search in the SearchableMessage model
+        searchable_messages = SearchableMessage.objects.filter(
+            message__chat=chat,
+            user=request.user, # Users can only search their own indexed messages
+            content__icontains=query
+        ).select_related('message__sender').order_by('-message__timestamp')
+
+        # Get the original Message objects
+        message_ids = [sm.message.id for sm in searchable_messages]
+        messages = Message.objects.filter(id__in=message_ids, is_deleted=False).order_by('-timestamp')
+
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(messages, request, view=self)
+        if page is not None:
+            serializer = MessageSerializer(page, many=True, context={'request': request})
+            return paginator.get_paginated_response(serializer.data)
+
+        # This case happens when the requested page is out of bounds (e.g., empty)
+        # The paginator returns None, so we should return an empty paginated response.
+        return paginator.get_paginated_response([])

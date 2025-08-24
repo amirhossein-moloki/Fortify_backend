@@ -39,6 +39,7 @@ class Profile(models.Model):
     GENDER_CHOICES = [
         ('male', 'Male'),
         ('female', 'Female'),
+        ('other', 'Other'),
     ]
 
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile", verbose_name="User")
@@ -46,6 +47,9 @@ class Profile(models.Model):
     gender = models.CharField(max_length=10, choices=GENDER_CHOICES, blank=True, null=True, verbose_name="Gender")
     location = models.CharField(max_length=100, blank=True, null=True, verbose_name="Location")
     website = models.URLField(blank=True, null=True, verbose_name="Website")
+    status_message = models.CharField(max_length=100, blank=True, null=True, verbose_name="Status Message")
+    banner_image = models.ImageField(upload_to='profile_banners/', blank=True, null=True, verbose_name="Banner Image")
+    social_links = models.JSONField(blank=True, null=True, default=dict, verbose_name="Social Media Links")
 
     def __str__(self):
         return f"{self.user.username}'s Profile"

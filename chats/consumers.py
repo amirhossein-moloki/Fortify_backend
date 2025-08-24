@@ -2,7 +2,8 @@ import json
 from urllib.parse import parse_qs
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
-from .models import Message, Attachment, Chat
+from .models import Message, Attachment, Chat, Poll, PollOption, PollVote, SearchableMessage
+from contacts.models import Block
 from django.contrib.auth import get_user_model
 from rest_framework.exceptions import AuthenticationFailed
 from encryption.utils import Encryptor, get_or_create_shared_key
@@ -72,13 +73,26 @@ class ChatConsumer(AsyncWebsocketConsumer):
         action = data.get('action')
 
         if action == 'send':
+            sender = self.scope['user']
+            chat = await database_sync_to_async(Chat.objects.get)(id=self.chat_id)
+            participants = await database_sync_to_async(list)(chat.participants.all())
+
+            for participant in participants:
+                if participant != sender:
+                    is_blocked = await self.is_blocked(sender, participant)
+                    if is_blocked:
+                        await self.send(text_data=json.dumps({
+                            'error': 'You cannot send messages to this user.'
+                        }))
+                        return
+
             message_content = data.get('message')
+            searchable_text = data.get('searchable_text', message_content) # Fallback for older clients
             file = data.get('file')
             reply_to_id = data.get('reply_to')
-            sender = self.scope['user']
 
             encrypted_content = self.encryptor.encrypt(message_content)
-            message = await self.save_message(sender, encrypted_content, reply_to_id)
+            message = await self.save_message(sender, encrypted_content, searchable_text, reply_to_id)
 
             sender_name = sender.username
             sender_profile_picture = sender.profile_picture.url if sender.profile_picture else None
@@ -93,11 +107,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
                 encrypted_file = ContentFile(output_file.read(), name=file['name'])
 
-                attachment = await self.save_attachment(message, encrypted_file, file['name'], file['type'], len(file_content))
+                attachment = await self.save_attachment(message, encrypted_file, file['name'], file['type'], len(file_content), file.get('attachment_type', 'file'))
                 file_data = {
                     'file_name': attachment.file_name,
                     'file_type': attachment.file_type,
                     'file_size': attachment.file_size,
+                    'type': attachment.type,
                 }
             else:
                 file_data = None
@@ -186,7 +201,42 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 }
             )
 
+        elif action == 'send_poll':
+            question = data.get('question')
+            options = data.get('options', [])
+
+            if not question or not options or len(options) < 2:
+                await self.send(text_data=json.dumps({
+                    'error': 'A poll must have a question and at least two options.'
+                }))
+                return
+
+            poll = await self.create_poll(question, options)
+            message = await self.save_message(self.scope['user'], b'', searchable_text=None, poll=poll)
+
+            from .serializers import WebsocketMessageSerializer
+
+            @database_sync_to_async
+            def get_serialized_message(msg):
+                return WebsocketMessageSerializer(msg).data
+
+            serialized_message = await get_serialized_message(message)
+
+            await self.channel_layer.group_send(
+                self.group_name,
+                {
+                    'type': 'chat_message',
+                    'message': serialized_message,
+                }
+            )
+
     async def chat_message(self, event):
+        # This handler now needs to be able to handle both regular messages and full serialized message objects
+        message_data = event.get('message')
+        if isinstance(message_data, dict): # It's a poll or other special message
+            await self.send(text_data=json.dumps(message_data))
+            return
+
         message_id = event.get('message_id')
         delivered_at = await self.set_message_delivered(message_id)
 
@@ -230,6 +280,43 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'user': event['user']
         }))
 
+    async def reaction_add(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'reaction_add',
+            'reaction': event['reaction']
+        }))
+
+    async def reaction_remove(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'reaction_remove',
+            'reaction_id': event['reaction_id'],
+            'message_id': event['message_id']
+        }))
+
+    async def pin_message_update(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'pin_message_update',
+            'chat': event['chat']
+        }))
+
+    async def poll_vote_update(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'poll_vote_update',
+            'poll': event['poll']
+        }))
+
+    @database_sync_to_async
+    def create_poll(self, question, options):
+        poll = Poll.objects.create(question=question)
+        for option_text in options:
+            PollOption.objects.create(poll=poll, text=option_text)
+        return poll
+
+    @database_sync_to_async
+    def is_blocked(self, user1, user2):
+        return Block.objects.filter(blocker=user1, blocked=user2).exists() or \
+               Block.objects.filter(blocker=user2, blocked=user1).exists()
+
     @database_sync_to_async
     def set_message_delivered(self, message_id):
         try:
@@ -242,27 +329,38 @@ class ChatConsumer(AsyncWebsocketConsumer):
             return None
 
     @database_sync_to_async
-    def save_message(self, sender, content, reply_to_id=None):
+    def save_message(self, sender, content, searchable_text, reply_to_id=None, poll=None):
         reply_to = None
         if reply_to_id:
             try:
                 reply_to = Message.objects.get(id=reply_to_id)
             except Message.DoesNotExist:
                 pass
-        message = Message.objects.create(sender=sender, content=content, chat_id=self.chat_id, reply_to=reply_to)
+
+        message = Message.objects.create(sender=sender, content=content, chat_id=self.chat_id, reply_to=reply_to, poll=poll)
         message.is_read = True
         message.read_by.add(sender)
         message.save()
+
+        # Create the searchable version
+        if searchable_text and not poll: # Don't save searchable content for polls
+            SearchableMessage.objects.create(
+                message=message,
+                user=sender,
+                content=searchable_text
+            )
+
         return message
 
     @database_sync_to_async
-    def save_attachment(self, message, file, file_name, file_type, file_size):
+    def save_attachment(self, message, file, file_name, file_type, file_size, attachment_type='file'):
         attachment = Attachment.objects.create(
             message=message,
             file=file,
             file_name=file_name,
             file_type=file_type,
-            file_size=file_size
+            file_size=file_size,
+            type=attachment_type
         )
         return attachment
 

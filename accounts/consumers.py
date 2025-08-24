@@ -1,70 +1,84 @@
 import json
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
-from django.utils.timezone import now
-import jwt
-from django.conf import settings
-from urllib.parse import parse_qs
-from .models import User  # وارد کردن مدل User پیش‌فرض
+from django.utils import timezone
+from .models import User
+from contacts.models import Contact
 
-class AccountStatusConsumer(AsyncWebsocketConsumer):
+class PresenceConsumer(AsyncWebsocketConsumer):
     async def connect(self):
-        self.username = self.scope['url_route']['kwargs'].get('username')
+        self.user = self.scope['user']
+        if self.user.is_anonymous:
+            await self.close()
+            return
 
-        # بررسی توکن JWT از URL و اعتبارسنجی آن
-        token = self.scope.get('query_string', None)
-        if token:
-            token = parse_qs(token.decode()).get('token', [None])[0]
-            if token:
-                try:
-                    payload = jwt.decode(token, settings.SECRET_KEY, algorithms=['HS256'])
-                    user_id = payload.get('user_id')
-                    self.user = await self.get_user(user_id)
+        # Add user to their own group to receive updates
+        await self.channel_layer.group_add(f"user_{self.user.id}", self.channel_name)
+        await self.accept()
 
-                    # اگر کاربر پیدا شد، به‌روزرسانی وضعیت آنلاین و قبول اتصال
-                    if self.user:
-                        await self.update_user_status(is_online=True)
-                        await self.accept()
-                        return
-                except jwt.ExpiredSignatureError:
-                    print("Token has expired.")
-                except jwt.InvalidTokenError:
-                    print("Invalid token.")
-
-        # اگر توکن معتبر نباشد یا کاربر پیدا نشود، اتصال را ببندید
-        await self.close()
+        # Set status to online and broadcast to contacts
+        await self.set_user_online_status(True)
+        await self.broadcast_status(online=True)
 
     async def disconnect(self, close_code):
-        if hasattr(self, 'user'):
-            # به‌روزرسانی وضعیت آفلاین
-            await self.update_user_status(is_online=False)
+        if self.user.is_anonymous:
+            return
 
-    async def receive(self, text_data):
-        """
-        دریافت داده‌های ورودی از کلاینت و پردازش آن.
-        """
-        try:
-            data = json.loads(text_data)
-            message = data.get("message", "No message received.")
+        # Set status to offline and broadcast to contacts
+        await self.set_user_online_status(False)
+        await self.broadcast_status(online=False)
 
-            # ارسال پاسخ به کلاینت
-            await self.send(text_data=json.dumps({
-                "message": f"Received: {message}",
-                "username": self.username  # اضافه کردن username به پاسخ
-            }))
-        except json.JSONDecodeError:
-            await self.send(text_data=json.dumps({
-                "error": "Invalid JSON format"
-            }))
+        # Remove user from their group
+        await self.channel_layer.group_discard(f"user_{self.user.id}", self.channel_name)
+
+    async def broadcast_status(self, online):
+        """ Broadcasts the user's status to their contacts. """
+        contacts = await self.get_user_contacts()
+        last_seen_iso = self.user.last_seen.isoformat() if self.user.last_seen else None
+
+        for contact_user in contacts:
+            await self.channel_layer.group_send(
+                f"user_{contact_user.id}",
+                {
+                    "type": "presence_update",
+                    "payload": {
+                        "user_id": self.user.id,
+                        "username": self.user.username,
+                        "online": online,
+                        "last_seen": last_seen_iso,
+                    }
+                },
+            )
+
+    async def presence_update(self, event):
+        """ Handler to send presence updates to the client. """
+        await self.send(text_data=json.dumps(event['payload']))
 
     @database_sync_to_async
-    def get_user(self, user_id):
-        """ دریافت کاربر از ID """
-        return User.objects.get(id=user_id)
+    def set_user_online_status(self, online):
+        # Update user instance in memory
+        self.user.is_online = online
+        if not online:
+            self.user.last_seen = timezone.now()
+
+        # Save to database
+        User.objects.filter(pk=self.user.pk).update(
+            is_online=online,
+            last_seen=self.user.last_seen if not online else None
+        )
+
 
     @database_sync_to_async
-    def update_user_status(self, is_online):
-        """ به‌روزرسانی وضعیت آنلاین/آفلاین کاربر """
-        self.user.is_online = is_online
-        self.user.last_seen = now()
-        self.user.save()
+    def get_user_contacts(self):
+        """
+        Fetches a list of users who are contacts with the current user
+        (where the relationship is accepted).
+        """
+        # Find users who have this user as a contact
+        user_contacts = Contact.objects.filter(contact=self.user, status='accepted').select_related('user').values_list('user__id', flat=True)
+        # Find contacts of this user
+        contacts_of_user = Contact.objects.filter(user=self.user, status='accepted').select_related('contact').values_list('contact__id', flat=True)
+
+        contact_ids = set(user_contacts).union(set(contacts_of_user))
+
+        return list(User.objects.filter(id__in=contact_ids))

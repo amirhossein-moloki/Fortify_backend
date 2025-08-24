@@ -6,31 +6,24 @@ from rest_framework import serializers
 from .models import User
 
 class UserSerializer(serializers.ModelSerializer):
+    profile_picture = serializers.ImageField(max_length=None, use_url=True, allow_null=True, required=False)
+    banner_image = serializers.ImageField(source='profile.banner_image', max_length=None, use_url=True, allow_null=True, required=False)
+
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'is_online', 'last_seen', 'profile_picture', 'bio']
+        fields = ['id', 'username', 'email', 'is_online', 'last_seen', 'profile_picture', 'bio', 'banner_image']
 
-    def validate_username(self, value):
-        if User.objects.filter(username=value).exists():
-            raise serializers.ValidationError("This username is already taken.")
-        return value
-
-    def to_representation(self, instance):
-        """
-        برای نمایش بهتر اطلاعات، در صورت نیاز، اطلاعات خاصی را برای هر فرد
-        به‌ویژه فیلدهای `username` و `profile_picture` می‌توان به‌طور ویژه برگشت داد.
-        """
-        representation = super().to_representation(instance)
-        representation['username'] = instance.username
-        representation['profile_picture'] = instance.profile_picture.url if instance.profile_picture else None
-        return representation
 
 class ProfileSerializer(serializers.ModelSerializer):
-    user = UserSerializer(read_only=True)  # نمایش اطلاعات مربوط به کاربر
+    user = UserSerializer(read_only=True)
+    social_links = serializers.JSONField(required=False)
 
     class Meta:
         model = Profile
-        fields = ['id', 'user', 'date_of_birth', 'gender', 'location', 'website']
+        fields = [
+            'id', 'user', 'date_of_birth', 'gender', 'location', 'website',
+            'status_message', 'banner_image', 'social_links'
+        ]
 
 
 class RegisterSerializer(serializers.ModelSerializer):

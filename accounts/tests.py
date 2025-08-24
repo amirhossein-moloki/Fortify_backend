@@ -104,6 +104,28 @@ class UserProfileTest(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertTrue(response.data['is_owner'])
 
+    def test_update_user_profile(self):
+        """
+        Ensure authenticated user can update their profile.
+        """
+        url = reverse('user_profile', kwargs={'username': self.user.username})
+        data = {
+            'bio': 'A new bio.',
+            'status_message': 'Feeling great!',
+            'social_links': {'twitter': 'https://twitter.com/testuser'}
+        }
+        response = self.client.patch(url, data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['bio'], 'A new bio.')
+        self.assertEqual(response.data['status_message'], 'Feeling great!')
+        self.assertEqual(response.data['social_links']['twitter'], 'https://twitter.com/testuser')
+
+        # Verify the data was saved to the database
+        self.user.refresh_from_db()
+        self.user.profile.refresh_from_db()
+        self.assertEqual(self.user.bio, 'A new bio.')
+        self.assertEqual(self.user.profile.status_message, 'Feeling great!')
+
 
 class OTPVerificationTest(APITestCase):
     def setUp(self):
@@ -263,3 +285,53 @@ class SearchUserViewTest(APITestCase):
         self.client.force_authenticate(user=self.user1)
         response = self.client.get(self.url, {'username': 'nonexistent'})
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+from channels.testing import WebsocketCommunicator
+from Fortify_back.asgi import application
+from contacts.models import Contact
+from rest_framework_simplejwt.tokens import RefreshToken
+import json
+
+class PresenceConsumerTestCase(TestCase):
+    def setUp(self):
+        self.user1 = User.objects.create_user(username='user1', password='password')
+        self.user2 = User.objects.create_user(username='user2', password='password')
+        Contact.objects.create(user=self.user1, contact=self.user2, status='accepted')
+
+    async def test_presence_broadcast(self):
+        # Generate tokens for authentication
+        refresh1 = RefreshToken.for_user(self.user1)
+        token1 = str(refresh1.access_token)
+
+        refresh2 = RefreshToken.for_user(self.user2)
+        token2 = str(refresh2.access_token)
+
+        # Communicator for user 2 (the listener)
+        communicator2 = WebsocketCommunicator(application, f"/ws/presence/?token={token2}")
+        connected2, _ = await communicator2.connect()
+        self.assertTrue(connected2)
+
+        # Communicator for user 1 (the one whose status changes)
+        communicator1 = WebsocketCommunicator(application, f"/ws/presence/?token={token1}")
+        connected1, _ = await communicator1.connect()
+        self.assertTrue(connected1)
+
+        # Check that user 2 receives the 'online' broadcast from user 1
+        response = await communicator2.receive_from()
+        data = json.loads(response)
+        self.assertEqual(data['user_id'], self.user1.id)
+        self.assertTrue(data['online'])
+
+        # User 1 disconnects
+        await communicator1.disconnect()
+
+        # Check that user 2 receives the 'offline' broadcast
+        response = await communicator2.receive_from()
+        data = json.loads(response)
+        self.assertEqual(data['user_id'], self.user1.id)
+        self.assertFalse(data['online'])
+        self.assertIsNotNone(data['last_seen'])
+
+        # Disconnect user 2
+        await communicator2.disconnect()
