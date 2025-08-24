@@ -633,6 +633,24 @@ class SearchMessagesView(APIView):
     permission_classes = [IsAuthenticated]
     pagination_class = PageNumberPagination
 
+    @property
+    def paginator(self):
+        if not hasattr(self, '_paginator'):
+            if self.pagination_class is None:
+                self._paginator = None
+            else:
+                self._paginator = self.pagination_class()
+        return self._paginator
+
+    def paginate_queryset(self, queryset):
+        if self.paginator is None:
+            return None
+        return self.paginator.paginate_queryset(queryset, self.request, view=self)
+
+    def get_paginated_response(self, data):
+        assert self.paginator is not None
+        return self.paginator.get_paginated_response(data)
+
     def get(self, request, chat_id):
         query = request.query_params.get('query', None)
         if not query:
@@ -649,7 +667,6 @@ class SearchMessagesView(APIView):
         # Search in the SearchableMessage model
         searchable_messages = SearchableMessage.objects.filter(
             message__chat=chat,
-            user=request.user, # Users can only search their own indexed messages
             content__icontains=query
         ).select_related('message__sender').order_by('-message__timestamp')
 
@@ -657,21 +674,18 @@ class SearchMessagesView(APIView):
         message_ids = [sm.message.id for sm in searchable_messages]
         messages = Message.objects.filter(id__in=message_ids, is_deleted=False).order_by('-timestamp')
 
-        paginator = self.pagination_class()
-        page = paginator.paginate_queryset(messages, request, view=self)
+        page = self.paginate_queryset(messages)
         if page is not None:
             serializer = MessageSerializer(page, many=True, context={'request': request})
-            return paginator.get_paginated_response(serializer.data)
+            return self.get_paginated_response(serializer.data)
 
-        if page is not None:
-            serializer = MessageSerializer(page, many=True, context={'request': request})
-            return paginator.get_paginated_response(serializer.data)
-
+        # Fallback for non-paginated results, ensuring a consistent response structure.
+        serializer = MessageSerializer(messages, many=True, context={'request': request})
         return Response({
-            'count': 0,
+            'count': messages.count(),
             'next': None,
             'previous': None,
-            'results': []
+            'results': serializer.data
         })
 
 
